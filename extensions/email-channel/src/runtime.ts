@@ -42,8 +42,6 @@ interface EmailProcessorState {
 const MAX_RETRY_ATTEMPTS = 3;
 
 function getStateFilePath(accountId: string): string {
-  // Store state files in the email-channel plugin directory
-  // This keeps all plugin-related files together
   return path.join(
     os.homedir(),
     ".openclaw",
@@ -224,7 +222,7 @@ class EmailAccountRuntime {
   }
 
   private createSmtpTransporter(): nodemailer.Transporter {
-    const config: any = {
+    const transporter = nodemailer.createTransport({
       host: this.config.smtp.host,
       port: this.config.smtp.port,
       secure: this.config.smtp.secure,
@@ -232,26 +230,7 @@ class EmailAccountRuntime {
         user: this.config.smtp.user,
         pass: this.config.smtp.password,
       },
-      // Add timeouts to prevent hanging
-      connectionTimeout: 15000,
-      greetingTimeout: 15000,
-      socketTimeout: 15000,
-    };
-
-    // Add debugging for SMTP issues
-    if (process.env.DEBUG_SMTP === "true") {
-      config.logger = true;
-      config.debug = true;
-    }
-
-    console.log(`[EMAIL PLUGIN] [${this.accountId}] Creating SMTP transporter:`, {
-      host: config.host,
-      port: config.port,
-      secure: config.secure,
-      user: config.auth.user,
-    });
-
-    const transporter = nodemailer.createTransport(config);
+    } as any);
 
     // Set timeout via socket option
     return transporter;
@@ -667,17 +646,11 @@ class EmailAccountRuntime {
         );
       }
 
-      console.log(`[EMAIL PLUGIN] [${this.accountId}] Attempting to send email to ${to}...`);
-      const info = await this.smtpTransporter.sendMail(mailOptions);
-      console.log(`[EMAIL PLUGIN] [${this.accountId}] ✅ Email sent successfully to ${to}`);
-      console.log(`[EMAIL PLUGIN] [${this.accountId}] Message ID: ${info.messageId}`);
+      await this.smtpTransporter.sendMail(mailOptions);
+      console.log(`[EMAIL PLUGIN] [${this.accountId}] Email sent to ${to}`);
       return true;
-    } catch (error: any) {
-      console.error(`[EMAIL PLUGIN] [${this.accountId}] ❌ Error sending email to ${to}:`);
-      console.error(`[EMAIL PLUGIN] [${this.accountId}] Error code: ${error?.code}`);
-      console.error(`[EMAIL PLUGIN] [${this.accountId}] Error command: ${error?.command}`);
-      console.error(`[EMAIL PLUGIN] [${this.accountId}] Error message: ${error?.message}`);
-      console.error(`[EMAIL PLUGIN] [${this.accountId}] Full error:`, error);
+    } catch (error) {
+      console.error(`[EMAIL PLUGIN] [${this.accountId}] Error sending email:`, error);
       return false;
     }
   }
