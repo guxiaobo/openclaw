@@ -4,23 +4,18 @@
  */
 
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
-import { emailPlugin } from "./channel.js";
+import { emptyPluginConfigSchema } from "openclaw/plugin-sdk";
+import { emailPlugin } from "./src/channel.js";
+import { setEmailRuntime } from "./src/channel.js";
 
 const plugin = {
-  id: "email-channel",
-  name: "Email Channel",
-  version: "1.0.0",
+  id: "email",
+  name: "Email",
   description: "Email channel plugin for sending and receiving messages via IMAP/SMTP",
-
+  configSchema: emptyPluginConfigSchema(),
   register(api: OpenClawPluginApi) {
-    // Register the email channel
+    setEmailRuntime(api.runtime);
     api.registerChannel({ plugin: emailPlugin });
-
-    // Log registration (using console since runtime.log may not be available in all SDK versions)
-    console.log("[EMAIL PLUGIN] Email channel plugin registered", {
-      plugin: "email-channel",
-      version: "1.0.0",
-    });
   },
 };
 
