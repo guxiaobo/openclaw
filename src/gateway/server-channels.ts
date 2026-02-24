@@ -6,6 +6,7 @@ import { type BackoffPolicy, computeBackoff, sleepWithAbort } from "../infra/bac
 import { formatErrorMessage } from "../infra/errors.js";
 import { resetDirectoryCache } from "../infra/outbound/target-resolver.js";
 import type { createSubsystemLogger } from "../logging/subsystem.js";
+import type { PluginRuntime } from "../plugins/runtime/types.js";
 import { DEFAULT_ACCOUNT_ID } from "../routing/session-key.js";
 import type { RuntimeEnv } from "../runtime.js";
 
@@ -60,10 +61,35 @@ type ChannelManagerOptions = {
   channelLogs: Record<ChannelId, SubsystemLogger>;
   channelRuntimeEnvs: Record<ChannelId, RuntimeEnv>;
   /**
-   * Optional channel runtime helpers (from PluginRuntime) to pass to channel gateway contexts.
-   * Channels that need access to dispatch, routing, or other utilities can use this.
+   * Optional channel runtime helpers for external channel plugins.
+   *
+   * When provided, this value is passed to all channel plugins via the
+   * `channelRuntime` field in `ChannelGatewayContext`, enabling external
+   * plugins to access advanced Plugin SDK features (AI dispatch, routing,
+   * text processing, etc.).
+   *
+   * Built-in channels (slack, discord, telegram) typically don't use this
+   * because they can directly import internal modules from the monorepo.
+   *
+   * This field is optional - omitting it maintains backward compatibility
+   * with existing channels.
+   *
+   * @example
+   * ```typescript
+   * import { createPluginRuntime } from "../plugins/runtime/index.js";
+   *
+   * const channelManager = createChannelManager({
+   *   loadConfig,
+   *   channelLogs,
+   *   channelRuntimeEnvs,
+   *   channelRuntime: createPluginRuntime().channel,
+   * });
+   * ```
+   *
+   * @since Plugin SDK 2026.2.19
+   * @see {@link ChannelGatewayContext.channelRuntime}
    */
-  channelRuntime?: import("../plugins/runtime/types.js").PluginRuntime["channel"];
+  channelRuntime?: PluginRuntime["channel"];
 };
 
 type StartChannelOptions = {
@@ -204,7 +230,7 @@ export function createChannelManager(opts: ChannelManagerOptions): ChannelManage
           log,
           getStatus: () => getRuntime(channelId, id),
           setStatus: (next) => setRuntime(channelId, id, next),
-          channelRuntime,
+          ...(channelRuntime ? { channelRuntime } : {}),
         });
         const trackedPromise = Promise.resolve(task)
           .catch((err) => {
