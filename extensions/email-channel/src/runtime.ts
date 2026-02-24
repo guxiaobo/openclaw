@@ -224,7 +224,7 @@ class EmailAccountRuntime {
   }
 
   private createSmtpTransporter(): nodemailer.Transporter {
-    const transporter = nodemailer.createTransport({
+    const config: any = {
       host: this.config.smtp.host,
       port: this.config.smtp.port,
       secure: this.config.smtp.secure,
@@ -232,7 +232,26 @@ class EmailAccountRuntime {
         user: this.config.smtp.user,
         pass: this.config.smtp.password,
       },
-    } as any);
+      // Add timeouts to prevent hanging
+      connectionTimeout: 15000,
+      greetingTimeout: 15000,
+      socketTimeout: 15000,
+    };
+
+    // Add debugging for SMTP issues
+    if (process.env.DEBUG_SMTP === "true") {
+      config.logger = true;
+      config.debug = true;
+    }
+
+    console.log(`[EMAIL PLUGIN] [${this.accountId}] Creating SMTP transporter:`, {
+      host: config.host,
+      port: config.port,
+      secure: config.secure,
+      user: config.auth.user,
+    });
+
+    const transporter = nodemailer.createTransport(config);
 
     // Set timeout via socket option
     return transporter;
@@ -648,11 +667,17 @@ class EmailAccountRuntime {
         );
       }
 
-      await this.smtpTransporter.sendMail(mailOptions);
-      console.log(`[EMAIL PLUGIN] [${this.accountId}] Email sent to ${to}`);
+      console.log(`[EMAIL PLUGIN] [${this.accountId}] Attempting to send email to ${to}...`);
+      const info = await this.smtpTransporter.sendMail(mailOptions);
+      console.log(`[EMAIL PLUGIN] [${this.accountId}] ✅ Email sent successfully to ${to}`);
+      console.log(`[EMAIL PLUGIN] [${this.accountId}] Message ID: ${info.messageId}`);
       return true;
-    } catch (error) {
-      console.error(`[EMAIL PLUGIN] [${this.accountId}] Error sending email:`, error);
+    } catch (error: any) {
+      console.error(`[EMAIL PLUGIN] [${this.accountId}] ❌ Error sending email to ${to}:`);
+      console.error(`[EMAIL PLUGIN] [${this.accountId}] Error code: ${error?.code}`);
+      console.error(`[EMAIL PLUGIN] [${this.accountId}] Error command: ${error?.command}`);
+      console.error(`[EMAIL PLUGIN] [${this.accountId}] Error message: ${error?.message}`);
+      console.error(`[EMAIL PLUGIN] [${this.accountId}] Full error:`, error);
       return false;
     }
   }
