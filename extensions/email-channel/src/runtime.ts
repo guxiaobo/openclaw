@@ -646,8 +646,10 @@ class EmailAccountRuntime {
         );
       }
 
-      await this.smtpTransporter.sendMail(mailOptions);
-      console.log(`[EMAIL PLUGIN] [${this.accountId}] Email sent to ${to}`);
+      const info = await this.smtpTransporter.sendMail(mailOptions);
+      console.log(
+        `[EMAIL PLUGIN] [${this.accountId}] Email sent to ${to}, Message ID: ${info.messageId}`,
+      );
       return true;
     } catch (error) {
       console.error(`[EMAIL PLUGIN] [${this.accountId}] Error sending email:`, error);
