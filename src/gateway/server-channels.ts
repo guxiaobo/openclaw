@@ -6,6 +6,7 @@ import { type BackoffPolicy, computeBackoff, sleepWithAbort } from "../infra/bac
 import { formatErrorMessage } from "../infra/errors.js";
 import { resetDirectoryCache } from "../infra/outbound/target-resolver.js";
 import type { createSubsystemLogger } from "../logging/subsystem.js";
+import type { PluginRuntime } from "../plugins/runtime/types.js";
 import { DEFAULT_ACCOUNT_ID } from "../routing/session-key.js";
 import type { RuntimeEnv } from "../runtime.js";
 
@@ -59,6 +60,12 @@ type ChannelManagerOptions = {
   loadConfig: () => OpenClawConfig;
   channelLogs: Record<ChannelId, SubsystemLogger>;
   channelRuntimeEnvs: Record<ChannelId, RuntimeEnv>;
+  /**
+   * Optional channel runtime for advanced Plugin SDK features.
+   * Provides access to dispatch functions, routing, and channel utilities.
+   * Requires Plugin SDK 2026.2.19 or later.
+   */
+  channelRuntime?: PluginRuntime["channel"];
 };
 
 type StartChannelOptions = {
@@ -78,7 +85,7 @@ export type ChannelManager = {
 
 // Channel docking: lifecycle hooks (`plugin.gateway`) flow through this manager.
 export function createChannelManager(opts: ChannelManagerOptions): ChannelManager {
-  const { loadConfig, channelLogs, channelRuntimeEnvs } = opts;
+  const { loadConfig, channelLogs, channelRuntimeEnvs, channelRuntime } = opts;
 
   const channelStores = new Map<ChannelId, ChannelRuntimeStore>();
   // Tracks restart attempts per channel:account. Reset on successful start.
@@ -199,6 +206,7 @@ export function createChannelManager(opts: ChannelManagerOptions): ChannelManage
           log,
           getStatus: () => getRuntime(channelId, id),
           setStatus: (next) => setRuntime(channelId, id, next),
+          ...(channelRuntime ? { channelRuntime } : {}),
         });
         const trackedPromise = Promise.resolve(task)
           .catch((err) => {
