@@ -140,16 +140,30 @@ const emailGatewayAdapter: ChannelGatewayAdapter<EmailAccount> = {
           }
         }
 
-        // Add system instructions for file generation
+        // Add system instruction for file generation
         message += `\n\n--- System Instructions ---\n`;
-        message += `This is an email channel. If you need to generate any files:\n\n`;
-        message += `1. Save files to /tmp/ or /tmp/openclaw-generated/\n`;
-        message += `2. Each file should only exist in ONE path\n`;
-        message += `3. Mention the file path in your response\n`;
-        message += `4. The system will automatically attach it to the reply\n`;
+        message += `This is an email channel. If you need to generate any files (images, documents, code, etc.):\n\n`;
+        message += `STEPS TO FOLLOW:\n`;
+        message += `1. IMPORTANT: Save files to ONE of these allowed directories (choose only one):\n`;
+        message += `   - /tmp/ (recommended: /tmp/filename.ext)\n`;
+        message += `   - /tmp/openclaw-generated/ (e.g., /tmp/openclaw-generated/filename.ext)\n`;
+        message += `   - ~/.openclaw/workspace/ (e.g., /Users/username/.openclaw/workspace/filename.ext)\n\n`;
+        message += `2. DO NOT copy the same file to multiple locations. Each file should only exist in ONE path.\n\n`;
+        message += `3. After saving, mention the file path in your response. The system will:\n`;
+        message += `   - Extract the file path automatically\n`;
+        message += `   - Attach it to the email reply\n\n`;
+        message += `4. The system will deduplicate files by filename, so avoid naming conflicts.\n\n`;
+        message += `EXAMPLES:\n`;
+        message += `✅ CORRECT: Save to /tmp/SystemInfo.java (single location)\n`;
+        message += `❌ AVOID: Copying to both /tmp/SystemInfo.java AND /workspace/SystemInfo.java\n\n`;
+        message += `NOTE: Only files in the allowed directories will be attached. `;
+        message += `Duplicate files (same filename) will be deduplicated automatically.`;
 
-        // Use fromEmail as sessionKey
+        // Use fromEmail as sessionKey so all emails from the same sender are in one conversation
         const sessionKey = `email:${fromEmail}`;
+
+        // Create a readable title for the session in Dashboard
+        const title = `📧 ${fromEmail}${subject ? ` - ${subject}` : ""}`;
 
         ctx.log?.info?.(
           `[${account.accountId}] Processing email from ${fromEmail}: "${subject}" (UID: ${uid}, Attachments: ${attachments.length})`,
@@ -159,31 +173,190 @@ const emailGatewayAdapter: ChannelGatewayAdapter<EmailAccount> = {
           // Store email context for outbound messaging
           emailContexts.set(sessionKey, { fromEmail, subject, messageId });
 
-          // TODO: Implement message dispatch using channel runtime
-          // For now, just log the message
-          ctx.log?.info?.(`[${account.accountId}] Email received and ready for processing`);
+          // Check if channelRuntime is available (Plugin SDK 2026.2.19+)
+          // Gracefully handle older SDK versions with a warning instead of throwing
+          if (!ctx.channelRuntime) {
+            ctx.log?.warn?.(
+              `[${account.accountId}] channelRuntime not available - requires Plugin SDK 2026.2.19+. Skipping AI response.`,
+            );
+            return;
+          }
+
+          // Use channelRuntime to dispatch the message
+          const core = ctx.channelRuntime;
+
+          // Use the dispatch function to process the message
+          const result = await core.reply.dispatchReplyWithBufferedBlockDispatcher({
+            ctx: {
+              Body: message,
+              RawBody: body,
+              CommandBody: body,
+              From: `email:${fromEmail}`,
+              To: `${account.accountId || "default"}:${fromEmail}|${subject}|${messageId}`, // Format: "accountId:email|subject|messageId"
+              SessionKey: sessionKey,
+              AccountId: account.accountId,
+              ChatType: "direct" as const,
+              ConversationLabel: from,
+              SenderName: from,
+              SenderId: fromEmail,
+              Provider: "email",
+              Surface: "email",
+              MessageSid: messageId,
+              Timestamp: Date.now(),
+            },
+            cfg: ctx.cfg,
+            dispatcherOptions: {
+              responsePrefix: undefined,
+              humanDelay: core.reply.resolveHumanDelayConfig(ctx.cfg, "default"),
+              deliver: async (payload: any, info: any) => {
+                // Send the reply via email
+                const replyText = payload.text || "";
+
+                // Extract files from payload (agent-generated media)
+                const attachments: Array<{
+                  path: string;
+                  filename?: string;
+                  contentType?: string;
+                }> = [];
+
+                // Handle single media file from payload
+                if (payload.mediaUrl) {
+                  attachments.push({
+                    path: payload.mediaUrl,
+                    contentType: payload.channelData?.MediaType as string | undefined,
+                  });
+                }
+
+                // Handle multiple media files from payload
+                if (payload.mediaUrls && payload.mediaUrls.length > 0) {
+                  const mediaTypes =
+                    (payload.channelData?.MediaTypes as string[] | undefined) || [];
+                  for (let i = 0; i < payload.mediaUrls.length; i++) {
+                    attachments.push({
+                      path: payload.mediaUrls[i],
+                      contentType: mediaTypes[i],
+                    });
+                  }
+                }
+
+                // Fallback: Extract file paths from text using strict patterns
+                // Only match paths in specific allowed directories to avoid false positives
+                const strictPathPatterns = [
+                  // Match /tmp/ paths (common temporary directory)
+                  /\/tmp\/[a-zA-Z0-9_\-./]+\.[a-zA-Z0-9]+/g,
+                  // Match openclaw workspace paths
+                  /\/Users\/[a-zA-Z0-9_\-./]+\/\.openclaw\/workspace\/[a-zA-Z0-9_\-./]+\.[a-zA-Z0-9]+/g,
+                ];
+
+                // Collect all paths first, then deduplicate
+                const extractedPaths: string[] = [];
+
+                for (const pattern of strictPathPatterns) {
+                  const matches = replyText.match(pattern);
+                  if (matches) {
+                    for (const match of matches) {
+                      // Clean up the path
+                      const cleanPath = match.trim();
+
+                      // Additional validation: must have a file extension
+                      if (!cleanPath.match(/\.[a-zA-Z0-9]+$/)) {
+                        continue;
+                      }
+
+                      // Avoid duplicates in extraction phase
+                      if (!extractedPaths.includes(cleanPath)) {
+                        extractedPaths.push(cleanPath);
+                      }
+                    }
+                  }
+                }
+
+                // Deduplicate by filename - if multiple paths have the same filename, keep only one
+                const filenameMap = new Map<string, string>();
+                for (const path of extractedPaths) {
+                  const filename = path.split("/").pop() || path;
+                  // Keep the first occurrence (prefer /tmp/ over workspace)
+                  if (!filenameMap.has(filename)) {
+                    filenameMap.set(filename, path);
+                  } else {
+                    // If current path is /tmp/, prefer it over workspace
+                    const existingPath = filenameMap.get(filename)!;
+                    if (path.startsWith("/tmp/") && !existingPath.startsWith("/tmp/")) {
+                      filenameMap.set(filename, path);
+                    }
+                  }
+                }
+
+                // Add deduplicated paths to attachments
+                for (const path of filenameMap.values()) {
+                  // Avoid duplicates with mediaUrl/mediaUrls
+                  if (!attachments.some((a) => a.path === path)) {
+                    attachments.push({ path: path });
+                  }
+                }
+
+                if (attachments.length > 0) {
+                  ctx.log?.info?.(
+                    `[${account.accountId}] Sending reply to ${fromEmail} with ${attachments.length} attachment(s)`,
+                  );
+                } else {
+                  ctx.log?.info?.(`[${account.accountId}] Sending reply to ${fromEmail}`);
+                }
+
+                await sendEmail(
+                  account.accountId || "default",
+                  fromEmail,
+                  subject,
+                  replyText,
+                  messageId,
+                  attachments.length > 0 ? attachments : undefined,
+                );
+              },
+              onError: (err: any, info: any) => {
+                ctx.log?.error?.(`[${account.accountId}] Email reply failed: ${String(err)}`);
+              },
+            },
+            replyOptions: {
+              disableBlockStreaming: true, // Email doesn't support streaming
+            },
+          });
 
           ctx.log?.info?.(`[${account.accountId}] Email processed successfully`);
         } catch (error: any) {
-          ctx.log?.error?.(
-            `[${account.accountId}] Error processing email from ${fromEmail}: ${error?.message || String(error)}`,
-          );
+          // Log detailed error information
+          const errorMsg = error?.message || String(error);
+          const errorStack = error?.stack || "";
+          const errorDetails = error?.toString() || String(error);
 
-          // Send error notification
-          try {
-            const errorMessage =
-              "Sorry, there was an error processing your request. Please try again later.";
-            await sendEmail(
-              account.accountId || "default",
-              fromEmail,
-              subject,
-              errorMessage,
-              messageId,
-            );
-          } catch (sendError) {
+          ctx.log?.error?.(`[${account.accountId}] Error processing email from ${fromEmail}:`);
+          ctx.log?.error?.(
+            `[${account.accountId}] Error type: ${error?.constructor?.name || "Unknown"}`,
+          );
+          ctx.log?.error?.(`[${account.accountId}] Error message: ${errorMsg}`);
+          if (errorStack) {
             ctx.log?.error?.(
-              `[${account.accountId}] Failed to send error notification: ${String(sendError)}`,
+              `[${account.accountId}] Stack trace: ${errorStack.split("\n").slice(0, 5).join(" | ")}`,
             );
+          }
+          ctx.log?.error?.(`[${account.accountId}] Full error: ${errorDetails}`);
+
+          // Send error notification to sender only if not a sending error
+          if (!errorMsg.includes("send") && !errorMsg.includes("SMTP")) {
+            try {
+              const errorMessage =
+                "Sorry, there was an error processing your request. Please try again later.";
+              await sendEmail(
+                account.accountId || "default",
+                fromEmail,
+                subject,
+                errorMessage,
+                messageId,
+              );
+            } catch (sendError) {
+              ctx.log?.error?.(
+                `[${account.accountId}] Failed to send error notification: ${String(sendError)}`,
+              );
+            }
           }
         }
       },

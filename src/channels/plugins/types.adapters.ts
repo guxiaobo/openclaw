@@ -3,6 +3,7 @@ import type { OpenClawConfig } from "../../config/config.js";
 import type { GroupToolPolicyConfig } from "../../config/types.tools.js";
 import type { OutboundDeliveryResult, OutboundSendDeps } from "../../infra/outbound/deliver.js";
 import type { OutboundIdentity } from "../../infra/outbound/identity.js";
+import type { PluginRuntime } from "../../plugins/runtime/types.js";
 import type { RuntimeEnv } from "../../runtime.js";
 import type {
   ChannelAccountSnapshot,
@@ -163,6 +164,13 @@ export type ChannelGatewayContext<ResolvedAccount = unknown> = {
   log?: ChannelLogSink;
   getStatus: () => ChannelAccountSnapshot;
   setStatus: (next: ChannelAccountSnapshot) => void;
+  /**
+   * Optional channel runtime for advanced Plugin SDK features.
+   * Provides access to dispatch functions, routing, and channel utilities.
+   * Requires Plugin SDK 2026.2.19 or later.
+   * @see {@link https://docs.openclaw.ai/plugins/developing-plugins | Plugin SDK docs}
+   */
+  channelRuntime?: PluginRuntime["channel"];
 };
 
 export type ChannelLogoutResult = {
