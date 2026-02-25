@@ -343,7 +343,13 @@ class EmailAccountRuntime {
         `[EMAIL PLUGIN] [${this.accountId}] Found ${results.length} email(s) since ${dateStr}`,
       );
 
-      const fetch = this.imapConnection!.fetch(results, { bodies: "", markSeen: false });
+      // Check if connection is still valid before fetching
+      if (!this.imapConnection) {
+        console.error(`[EMAIL PLUGIN] [${this.accountId}] IMAP connection lost before fetch`);
+        return;
+      }
+
+      const fetch = this.imapConnection.fetch(results, { bodies: "", markSeen: false });
 
       fetch.on("message", (msg: any) => {
         let uid: number | null = null;
