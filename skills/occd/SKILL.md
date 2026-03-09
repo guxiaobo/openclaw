@@ -1,271 +1,312 @@
 ---
 name: occd
-description: OCCD (OpenCode Continuous Developing) - 自动化多仓库持续开发 Skill。OpenClaw 作为主代理，持续监听多个 GitHub 仓库（github-* 目录）的需求目录（occd/req/），将需求转化为子任务，通过 sessions_spawn 启动子代理并行/串行执行，自动测试修复直到通过后 commit & push。触发关键词：occd、auto-coder、自动编程、需求转任务、多仓库自动开发、启动编程流水线、持续开发。
+description: OCCD (OpenCode Continuous Developing) - 多仓库持续开发编排 Skill。用于 OpenClaw 主代理在收到“启动持续开发 / 自动编程流水线 / occd / auto-coder”类指令后，扫描多个 github-* 仓库中的 occd/req/ 需求文档，判断是否需要澄清，拆分为 coding / test-write / test-run 子任务，并通过 sessions_spawn 启动子代理按串行批次与批内并行方式持续执行，直到测试、合并、提交与推送完成。适用于需求转任务、多仓库自动开发、长流程编程协调、持续修复与回归测试。
 ---
 
 # OCCD - OpenCode Continuous Developing
 
-OpenClaw 作为主代理驱动的自动化编程流水线。
+把你当成 **主编排代理**，不是直接写代码的执行器。
 
-## 架构
+目标：收到用户“开始持续开发”的指令后，驱动多仓库 OCCD 流程：
 
-```
-OpenClaw 主代理（你）
-  ├── cron 定期触发轮询
-  ├── 读取 occd/req/ 新需求，通过 occd.db 去重防漏
-  ├── 分析需求，拆分为子任务写入 occd/source/（类型：coding/test-write/test-run）
-  ├── 按依赖关系串行/并行 sessions_spawn 子代理
-  │     └── 子代理执行任务，将结果报告写入 occd/task/，原始输出写入 occd/logs/
-  │     └── 完成后通过 occd_utils.py 汇报状态（不直接写 DB）
-  └── 主代理读取报告，决定下一步（通过/修复/失败）
-```
+1. 拉取仓库与扫描需求
+2. 判断需求是否明确
+3. 生成 review 或拆分 source 任务
+4. 对当前串行批次并发启动子代理
+5. 读取报告并推进下一步
+6. 合并、测试、提交、推送
 
-Python 脚本仅作为工具辅助（git 操作、DB 读写、日志）。
+## 先读什么
+
+按需读取：
+
+- 命令参考：`references/occd-utils-commands.md`
+- source 任务格式：`references/source-task-template.md`
+- 报告格式：`references/task-report-template.md`
+- review 格式：`references/review-template.md`
+- DB schema：`references/occd-db-schema.sql`
+- 旧版草案：`references/legacy/legacy-requirements.md`（仅做历史参考，不作为当前实现依据）
 
 ## 目录约定
 
-每个 `github-*` 仓库下的 `occd/` 是所有工作目录：
+每个 `github-*` 仓库下的 `occd/` 是工作目录：
 
-```
+```text
 github-<repo>/
   occd/
-    req/       ← 需求文档（md/txt，只读，由人工或外部系统写入）
-    source/    ← 子任务 prompt 文件（主代理生成，子代理只读）
-    task/      ← 子任务执行结果报告（子代理写入，每次执行一个文件）
-    review/    ← 需求澄清文件（主代理生成）
-    logs/      ← 子代理原始技术输出（YYYY-MM-DD.log）
-    occd.db    ← SQLite 状态数据库（主代理独占读写，随仓库 git 同步）
+    req/       # 需求文档，只读
+    source/    # 主代理生成的子任务 prompt
+    task/      # 子代理写入的结构化报告
+    review/    # 主代理生成的需求澄清文件
+    logs/      # 原始运行日志
+    occd.db    # SQLite 状态库
 ```
 
-### 目录职责说明
+## 核心约束
 
-| 目录      | 写入者    | 内容          | 说明                                |
-| --------- | --------- | ------------- | ----------------------------------- |
-| `req/`    | 人工/外部 | 需求文档      | **只读**，任何代理禁止修改          |
-| `source/` | 主代理    | 子任务 prompt | 子代理的工作说明书，子代理只读      |
-| `task/`   | 子代理    | 执行结果报告  | 每次执行对应一个文件，记录过程+结果 |
-| `review/` | 主代理    | 需求澄清      | 需求不清时生成，等待人工更新 req    |
-| `logs/`   | 子代理    | 原始技术输出  | 日志流水账，不含结构化结论          |
-| `occd.db` | 主代理    | 状态数据库    | 通过 occd_utils.py 操作             |
+- **绝不修改** `occd/req/` 里的需求文件
+- **主代理负责编排与决策**；子代理负责执行单个 source 任务
+- **子代理不得直接操作 SQLite 文件**；只能通过 `scripts/occd_utils.py` 暴露的受控命令更新状态
+- **主代理基于 `task/report-*.md` 做决策**，不要只信会话口头描述
+- **每个 coding / test-write 任务独立 worktree / 分支**
+- **只提交本次任务相关文件**；不要默认 `git add -A`
 
-### source/ 子任务类型
+## 启动方式
 
-主代理拆分需求时，子任务类型可以是：
-
-统一命名格式：`reqZZZ-XXX-YYY-{type}.md`
-
-| 段       | 含义                            | 示例                                 |
-| -------- | ------------------------------- | ------------------------------------ |
-| `ZZZ`    | 需求序号（在本仓库内唯一递增）  | `001`                                |
-| `XXX`    | 串行批次号，同 ZZZ 下按顺序执行 | `001`                                |
-| `YYY`    | 并行子序号，同 XXX 内可并行执行 | `002`                                |
-| `{type}` | 任务类型                        | `coding` / `test-write` / `test-run` |
-
-示例：
-
-- `req001-001-001-coding.md`：需求001的第一批次第一个编码任务
-- `req001-001-002-coding.md`：需求001的第一批次第二个编码任务（与上一个并行）
-- `req001-002-001-test-write.md`：需求001的第二批次写测试任务（等第一批次全部完成后启动）
-- `req001-003-001-test-run.md`：需求001的第三批次跑测试任务
-
-### task/ 报告文件
-
-每次子代理执行一个 source 任务后，写入一个报告文件：
-
-```
-task/report-{task_id}-{timestamp}.md
-```
-
-例：`task/report-req001-001-001-coding-20260309T094500.md`
-
-报告格式见 [references/task-report-template.md](references/task-report-template.md)，包含：
-
-- 执行时间、使用的 session key
-- 执行结论（success / failure / partial）
-- 关键变更摘要
-- 遇到的问题
-- 是否需要主代理介入
-
-> **区别于 logs/**：task/ 是结构化的执行报告，主代理依据此做决策；logs/ 是原始输出流水账。
-
-### occd.db 约定
-
-- **唯一写者**：只有主代理通过 `occd_utils.py` 写入，子代理不直接访问
-- **随仓库同步**：每次状态批次变更后，通过 `commit-push --include-db` 将 `occd.db` 一起提交
-- **二进制文件**：仓库 `.gitattributes` 须包含 `occd/occd.db binary`，防止 merge 冲突
-- **多实例接力**：另一台机器 `git pull` 后即可获取最新状态，无缝接力
-- **Schema**：见 [references/occd-db-schema.sql](references/occd-db-schema.sql)
-
-## 初始化
-
-```
-/occd init --work-dir ~/projects --poll-interval 300
-```
-
-这会在 `~/.openclaw/occd-config.json` 保存配置，并注册 cron 任务。
-同时在每个仓库的 `occd/` 目录下初始化 `occd.db` 和写入 `.gitattributes`。
-
-配置参数见 [REQUIREMENTS.md](REQUIREMENTS.md)。
-
-## 主代理职责（你需要做的）
-
-### 1. 轮询触发（cron 回调时执行）
-
-```
-调用 scripts/occd_utils.py scan-repos --work-dir <work_dir>
-→ 返回各仓库需要处理的需求列表（已自动比对 occd.db 去重）
-
-对每个需求：
-  调用 scripts/occd_utils.py git-pull --repo <repo_path>
-  读取 occd/req/<reqname> 内容
-  判断需求是否明确（见下）
-```
-
-`scan-repos` 内部逻辑：
-
-1. 遍历 `req/` 下所有文件，计算 `content_hash`
-2. 查询 `occd.db`：若记录存在且 hash 未变且 status ∉ `{new, failed}` → 跳过
-3. hash 变化 → 重置状态为 `new`，重新分析
-4. 不存在 → 插入新记录，status = `new`
-
-### 2. 需求分析
-
-自行阅读需求文档，判断是否足够明确：
-
-- **不明确** → 调用 `scripts/occd_utils.py write-review` 生成 review 文件，DB 状态更新为 `reviewing`
-- **明确** → 拆分为子任务，调用 `scripts/occd_utils.py write-tasks` 写入 source/ 和 DB
-
-拆分原则：
-
-- 编码任务（`req001-001-001-coding`）：实现具体功能
-- 写测试任务（`req001-002-001-test-write`）：为编码任务编写测试用例（通常在对应 coding 任务之后）
-- 跑测试任务（`req001-003-001-test-run`）：执行测试并报告（通常在 test-write 完成之后）
-- 同 XXX 的任务串行，同 XXX 内不同 YYY 的任务并行
-
-### 3. 启动子代理（sessions_spawn）
-
-对当前串行批次（XXX）内所有 YYY 并行 spawn：
-
-```python
-task = f"""
-你是一个执行子代理。请完成以下任务：
-
-仓库路径: {repo_path}
-任务文件: {repo_path}/occd/source/{task_id}.md
-
-步骤：
-1. 读取任务文件，了解任务类型和要求
-2. 若任务类型为 coding 或 test-write：
-   调用 scripts/occd_utils.py create-worktree --repo {repo_path} --branch {task_id}
-   在 worktree 目录中使用 opencode 完成工作（见 opencode-controller skill）
-3. 若任务类型为 test-run：
-   调用 scripts/occd_utils.py run-tests --repo {repo_path}
-4. 完成后，将执行结果报告写入：
-   occd/task/report-{task_id}-{timestamp}.md（格式见 task-report-template.md）
-5. 调用 scripts/occd_utils.py update-source-status \
-     --repo {repo_path} --task {task_id} --status done --session-key {session_key}
-"""
-sessions_spawn(task=task, mode="run")
-```
-
-spawn 前主代理在 DB 中将 source 状态更新为 `spawned`，记录 session_key。
-
-### 4. 读取报告，决策下一步
-
-子代理完成后，主代理读取 `occd/task/report-{task_id}-*.md`：
-
-```
-结论为 success：
-  → DB 更新 source 状态为 done
-  → 若当前 XXX 全部 done → 启动下一个 XXX 批次
-  → 若所有批次完成 → commit-push --include-db，需求标记 done
-
-结论为 failure 且 retry_count < max_fix_retries：
-  → DB 记录 retry_count + 1
-  → 重新 spawn 子代理（任务文件不变，子代理读报告了解上次失败原因）
-
-结论为 failure 且超过重试上限：
-  → DB 标记 source 为 failed，需求标记 failed
-  → 记录日志，等待人工介入
-```
-
-对于 `test-run` 类型，若测试失败且存在对应 `coding` 任务：
-→ 重新 spawn 对应的 coding 子代理修复，再重新跑测试。
-
-### 5. 合并分支（coding/test-write 任务完成后）
-
-```
-调用 scripts/occd_utils.py merge-branches --repo <repo_path> --xxx <xxx>
-→ 按 commit 时间升序合并，返回冲突列表
-
-冲突分支 → 重新 spawn 对应编码子代理（基于最新代码）
-```
-
-### 6. Review 回复检测
-
-轮询时对 `reviewing` 状态的需求：
-
-```
-scripts/occd_utils.py check-new-commit --repo <repo_path> --file occd/req/<reqname>
-有新 commit → DB 中重置需求状态为 new → 重新触发需求分析
-```
-
-## 子代理职责
-
-子代理收到任务后：
-
-1. 读取 `occd/source/{task_id}.md`，明确任务类型和要求
-2. 执行任务（coding/test-write 用 opencode；test-run 直接跑测试）
-3. 将结构化执行报告写入 `occd/task/report-{task_id}-{timestamp}.md`
-4. 将原始技术输出追加到 `occd/logs/YYYY-MM-DD.log`
-5. 通过 `occd_utils.py update-source-status` 汇报状态（**不直接读写 occd.db**）
-
-参考 `opencode-controller` skill 了解如何操作 opencode。
-
-## 工具脚本
-
-所有 git 操作、文件操作、DB 操作通过 `scripts/occd_utils.py` 完成。
-
-用法：
+### 1) 初始化全局配置
 
 ```bash
-python scripts/occd_utils.py <command> [--options]
+python scripts/occd_utils.py config-init \
+  --work-dir ~/projects \
+  --poll-interval 300 \
+  --max-agents 8 \
+  --max-fix-retries 5 \
+  --base-branch main \
+  --auto-push
 ```
 
-命令列表见 [references/occd-utils-commands.md](references/occd-utils-commands.md)。
+### 2) 初始化目标仓库
 
-## 状态数据库（occd.db）
+对每个受管仓库执行：
 
-Schema 定义见 [references/occd-db-schema.sql](references/occd-db-schema.sql)。
-
-核心表关系：
-
-```
-requirements (req/ 文件)
-  ├── reviews (review/ 文件，1:N)
-  ├── sources (source/ 子任务 prompt，1:N)
-  │     └── executions (task/ 报告，1:N，每次执行一条记录)
-  └── task_events (所有状态变更历史，append-only)
+```bash
+python scripts/occd_utils.py db-init --repo ~/projects/github-myapp
 ```
 
-需求状态：`new → reviewing → new → decomposed → done / failed`
+### 3) 轮询时获取下一步动作
 
-source 状态：`pending → spawned → running → done / failed`
+优先使用 controller 辅助脚本：
 
-## 模板文件
+```bash
+python scripts/occd_controller.py poll-plan --work-dir ~/projects
+```
 
-- [references/source-task-template.md](references/source-task-template.md)：子任务 prompt 格式
-- [references/task-report-template.md](references/task-report-template.md)：执行结果报告格式
-- [references/review-template.md](references/review-template.md)：需求澄清文件格式
-- [references/occd-db-schema.sql](references/occd-db-schema.sql)：SQLite DB schema
+或查看单仓库下一步：
 
-## 关键约定
+```bash
+python scripts/occd_controller.py repo-status --repo ~/projects/github-myapp
+```
 
-- **需求文件只读**：所有代理禁止修改 `occd/req/`
-- **DB 单写者**：只有主代理通过 `occd_utils.py` 写 `occd.db`，子代理通过命令接口汇报
-- **DB 随仓库同步**：`commit-push --include-db` 将 `occd.db` 和代码一并提交
-- **报告驱动决策**：主代理依据 `task/` 下的报告做下一步决策，不依赖子代理的口头描述
-- **分支名 = 任务ID**：如 `req001-001-002-coding`
-- **commit 格式**：`[occd] {req_filename}: <需求摘要>`
-- **冲突处理**：早提交优先，冲突方重新运行 opencode（不是 rebase）
-- **日志**：调用 `occd_utils.py log` 写入，不要直接写文件
+controller 不会替你做 agent 决策，只会告诉你：
+
+- 哪个需求要分析
+- 哪个 review 要检查回复
+- 哪个串行批次可以 spawn
+- 哪个需求可以 finalize
+
+## 主代理标准流程
+
+### 场景 A：收到“启动 occd / 持续开发”指令
+
+1. 读取配置（`config-show`）
+2. 对 work_dir 下仓库执行 `poll-plan`
+3. 对每个 repo action 依次处理
+4. 对需要 spawn 的批次调用 `sessions_spawn`
+
+### 场景 B：发现新需求（action = `analyze_requirement`）
+
+1. `git-pull --ff-only`
+2. 读取 `occd/req/<reqname>`
+3. 判断是否明确：
+   - 不明确：调用 `write-review`
+   - 明确：拆分任务，调用 `write-tasks`
+
+拆分任务时统一使用：
+
+- `reqZZZ-XXX-YYY-coding`
+- `reqZZZ-XXX-YYY-test-write`
+- `reqZZZ-XXX-YYY-test-run`
+
+规则：
+
+- 同一 `XXX` 批次串行推进
+- 同一 `XXX` 内不同 `YYY` 可并行
+- `coding` 一般先于 `test-write`
+- `test-run` 用于最终验证或回归验证
+
+### 场景 C：review 中（action = `check_review_reply`）
+
+调用：
+
+```bash
+python scripts/occd_utils.py check-new-commit \
+  --repo <repo_path> \
+  --file occd/req/<reqname> \
+  --last-commit <last_req_commit>
+```
+
+若检测到新 commit：
+
+- 将 requirement 状态重置为 `new`
+- 重新进入需求分析
+
+### 场景 D：可启动一批子任务（action = `spawn_batch`）
+
+对该 `XXX` 批次内状态为 `pending` / `failed` 的 source 任务并发 `sessions_spawn`。
+
+## 子代理 prompt 建议模板
+
+向每个子代理提供：
+
+- 仓库路径
+- source 任务文件路径
+- worktree 分支名
+- 结果报告路径规范
+- 必须调用的状态命令
+
+示例骨架：
+
+```text
+你是 OCCD 执行子代理，请完成一个 source 任务。
+
+仓库路径: <repo_path>
+任务文件: <repo_path>/occd/source/<task_id>.md
+
+要求：
+1. 读取任务文件
+2. 立即调用：
+   python scripts/occd_utils.py db-update-source-status \
+     --repo <repo_path> --task <task_id> --status running --session-key <session_key>
+3. 如果是 coding / test-write：
+   - create-worktree --reuse-if-exists
+   - 在独立 worktree 中完成修改
+4. 如果是 test-run：
+   - 直接调用 run-tests
+5. 写结构化报告到 occd/task/report-<task_id>-<timestamp>.md
+6. 调用 db-add-execution 登记本次执行
+7. 再调用 db-update-source-status 标记 done / failed
+```
+
+## 子代理任务类型约定
+
+### coding
+
+- 在独立 worktree 中实现功能
+- 保持变更边界清晰
+- 完成后写报告，不要只说“已完成”
+
+### test-write
+
+- 为对应代码写测试
+- 保持与 coding 任务边界一致
+- 如需新增测试依赖，写入报告
+
+### test-run
+
+- 调用 `run-tests`
+- 若未识别测试框架，视为 **失败待人工处理**，不要当成通过
+
+## 主代理如何读报告并决策
+
+读取 `occd/task/report-{task_id}-*.md` 后：
+
+- `success`：标记 source 为 `done`
+- `failure` 且未超过 `max_fix_retries`：重试该 source
+- `failure` 且已达上限：标记 source / requirement 为 `failed`
+- `partial`：主代理人工判断是否继续、补任务、或回滚
+
+如果当前 `XXX` 全部 `done`：
+
+1. 对 coding / test-write 批次执行 `merge-branches`
+2. 若有冲突，重新 spawn 冲突对应任务
+3. 若无冲突，推进到下一 `XXX`
+
+如果所有批次都完成：
+
+1. 运行最终 `test-run` 或汇总测试
+2. 调用 `commit-push`
+3. requirement 标记为 `done`
+
+## Git 与测试命令
+
+### 创建 worktree
+
+```bash
+python scripts/occd_utils.py create-worktree \
+  --repo <repo_path> \
+  --branch req001-001-001-coding \
+  --reuse-if-exists
+```
+
+### 合并批次分支
+
+```bash
+python scripts/occd_utils.py merge-branches \
+  --repo <repo_path> \
+  --xxx 001 \
+  --base-branch main
+```
+
+### 跑测试
+
+```bash
+python scripts/occd_utils.py run-tests --repo <repo_path>
+```
+
+### 只提交本次相关文件
+
+```bash
+python scripts/occd_utils.py commit-push \
+  --repo <repo_path> \
+  --message "[occd] feature.md: 实现登录功能" \
+  --path src/auth.py \
+  --path tests/test_auth.py \
+  --include-db \
+  --push
+```
+
+## 常见决策原则
+
+### 需求不清时
+
+优先生成 review，不要擅自脑补产品决策。
+
+### 测试框架没识别出来时
+
+当成 **未完成**，记录到报告，等待主代理补充判断。
+
+### 合并冲突时
+
+- 保留先合并分支
+- 对冲突分支重新 spawn 基于最新代码的任务
+- 不要强行 rebase 子代理分支来“糊过去”
+
+### 提交时
+
+- 默认只提交明确路径
+- 只有用户明确接受时才使用 `--all`
+
+## controller 与 utils 的职责分工
+
+### `scripts/occd_controller.py`
+
+负责输出“下一步动作建议”：
+
+- `repo-status`
+- `global-status`
+- `poll-plan`
+
+### `scripts/occd_utils.py`
+
+负责受控落地动作：
+
+- config 管理
+- DB 初始化与状态变更
+- review/source/task 相关文件写入
+- git worktree / merge / commit / push
+- 测试执行
+- repo 锁
+
+## 当前实现边界
+
+这个 skill 现在已经提供：
+
+- 状态库
+- 配置管理
+- 控制器辅助输出
+- 安全一些的 git / test / worktree 工具
+
+但 **需求是否清晰、如何拆任务、何时 spawn、如何写子代理 prompt** 仍由你这个主代理判断与执行。
+
+这正是本 skill 的设计目标：
+**让 OpenClaw 主代理收到指令后，能够稳定地启动并持续驱动子代理开发流程，而不是把逻辑藏进一个黑盒脚本里。**
