@@ -185,6 +185,29 @@ def read_config(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def shell_quote(value: str) -> str:
+    if value == "":
+        return "''"
+    if all(ch.isalnum() or ch in "._/-:" for ch in value):
+        return value
+    return "'" + value.replace("'", "'\"'\"'") + "'"
+
+
+def build_opencode_command_from_config(config: dict[str, Any], prompt: str, extra_args: list[str] | None = None) -> dict[str, Any]:
+    opencode_path = config.get("opencode_path") or "opencode"
+    raw_args = config.get("opencode_args") or "run"
+    argv = [opencode_path] + [part for part in str(raw_args).split() if part]
+    if extra_args:
+        argv.extend(extra_args)
+    argv.append(prompt)
+    return {
+        "opencode_path": opencode_path,
+        "opencode_args": raw_args,
+        "argv": argv,
+        "command": " ".join(shell_quote(x) for x in argv),
+    }
+
+
 def get_repo_name(repo: Path) -> str:
     return repo.name
 
@@ -889,6 +912,27 @@ def cmd_commit_push(args):
     output({"success": True, "committed": True, "pushed": pushed, "paths": changed, "push_output": push_output})
 
 
+def cmd_build_opencode_command(args):
+    config = read_config(Path(args.config).expanduser())
+    extra_args = args.extra_arg or []
+    result = build_opencode_command_from_config(config, args.prompt, extra_args)
+    output({"success": True, **result})
+
+
+def cmd_latest_report(args):
+    repo = Path(args.repo)
+    conn = get_conn(repo)
+    row = conn.execute(
+        "SELECT report_file, session_key, outcome, summary, started_at, finished_at FROM executions WHERE source_id=? ORDER BY finished_at DESC, id DESC LIMIT 1",
+        (args.task,),
+    ).fetchone()
+    conn.close()
+    if not row:
+        output({"success": True, "found": False, "task": args.task})
+        return
+    output({"success": True, "found": True, "task": args.task, **dict(row)})
+
+
 def cmd_log(args):
     write_log(Path(args.repo), args.level.upper(), args.message)
     output({"success": True})
@@ -1059,6 +1103,17 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--push", action="store_true")
     s.add_argument("--base-branch", default=None)
     s.set_defaults(func=cmd_commit_push)
+
+    s = sp("build-opencode-command", "根据全局配置生成 OpenCode 命令")
+    s.add_argument("--config", default=str(DEFAULT_CONFIG_PATH))
+    s.add_argument("--prompt", required=True)
+    s.add_argument("--extra-arg", action="append")
+    s.set_defaults(func=cmd_build_opencode_command)
+
+    s = sp("latest-report", "根据 executions 表获取某任务最新报告")
+    s.add_argument("--repo", required=True)
+    s.add_argument("--task", required=True)
+    s.set_defaults(func=cmd_latest_report)
 
     s = sp("log", "写运行日志")
     s.add_argument("--repo", required=True)

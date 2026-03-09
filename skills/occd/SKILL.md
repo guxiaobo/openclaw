@@ -23,12 +23,16 @@ description: OCCD (OpenCode Continuous Developing) - 多仓库持续开发编排
 
 - 命令参考：`references/occd-utils-commands.md`
 - 主代理运行手册：`references/main-agent-runbook.md`
+- 主代理需求分析提示：`references/llm-analysis-prompt.md`
 - 子代理 prompt 模板：`references/subagent-prompt-template.md`
+- OpenCode 命令指南：`references/opencode-command-guide.md`
 - source 任务格式：`references/source-task-template.md`
 - 报告格式：`references/task-report-template.md`
 - 报告分诊：`references/report-triage-guide.md`
+- 报告定位：`references/report-location-guide.md`
 - 重试策略：`references/retry-policy.md`
 - finalize 清单：`references/finalize-checklist.md`
+- end-to-end 演练：`references/end-to-end-demo.md`
 - review 格式：`references/review-template.md`
 - DB schema：`references/occd-db-schema.sql`
 
@@ -296,10 +300,14 @@ python scripts/occd_utils.py commit-push \
 ### 主代理首次接手一个 occd 请求时
 
 1. 先读 `references/main-agent-runbook.md`
-2. 再读 `references/occd-utils-commands.md`
-3. 需要 spawn 子代理时读 `references/subagent-prompt-template.md`
-4. 需要判断报告时读 `references/report-triage-guide.md`
-5. 收尾时读 `references/finalize-checklist.md`
+2. 分析 req 时读 `references/llm-analysis-prompt.md`
+3. 再读 `references/occd-utils-commands.md`
+4. 需要 spawn 子代理时读 `references/subagent-prompt-template.md`
+5. 需要拼 OpenCode 命令时读 `references/opencode-command-guide.md`
+6. 需要判断报告时读 `references/report-triage-guide.md`
+7. 需要定位最新报告时读 `references/report-location-guide.md`
+8. 收尾时读 `references/finalize-checklist.md`
+9. 需要完整演练时读 `references/end-to-end-demo.md`
 
 ### 子代理执行 source 任务时
 

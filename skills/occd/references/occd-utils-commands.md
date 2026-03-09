@@ -330,7 +330,41 @@ python scripts/occd_utils.py commit-push \
 
 ---
 
-## 8. 测试
+## 8. OpenCode 命令辅助
+
+### build-opencode-command
+
+根据全局配置生成统一的 OpenCode 启动命令，避免主代理/子代理到处手拼。
+
+```bash
+python scripts/occd_utils.py build-opencode-command \
+  --config ~/.openclaw/occd-config.json \
+  --prompt "在当前 worktree 中实现登录接口"
+```
+
+可选追加额外参数：
+
+```bash
+python scripts/occd_utils.py build-opencode-command \
+  --config ~/.openclaw/occd-config.json \
+  --extra-arg --model \
+  --extra-arg gpt-5 \
+  --prompt "在当前 worktree 中实现登录接口"
+```
+
+### latest-report
+
+根据 `executions` 表返回某个 task 的最新报告，而不是扫目录。
+
+```bash
+python scripts/occd_utils.py latest-report \
+  --repo <repo> \
+  --task req001-001-001-coding
+```
+
+---
+
+## 9. 测试
 
 ### run-tests
 
@@ -348,7 +382,7 @@ python scripts/occd_utils.py run-tests --repo <repo>
 
 ---
 
-## 9. controller 辅助命令
+## 10. controller 辅助命令
 
 controller 只负责告诉主代理“下一步建议做什么”，不直接替代主代理做文本判断、sessions_spawn 或报告分诊。
 
