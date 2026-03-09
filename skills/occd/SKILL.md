@@ -21,11 +21,15 @@ description: OCCD (OpenCode Continuous Developing) - 多仓库持续开发编排
 按需读取：
 
 - 命令参考：`references/occd-utils-commands.md`
+- 主代理运行手册：`references/main-agent-runbook.md`
+- 子代理 prompt 模板：`references/subagent-prompt-template.md`
 - source 任务格式：`references/source-task-template.md`
 - 报告格式：`references/task-report-template.md`
+- 报告分诊：`references/report-triage-guide.md`
+- 重试策略：`references/retry-policy.md`
+- finalize 清单：`references/finalize-checklist.md`
 - review 格式：`references/review-template.md`
 - DB schema：`references/occd-db-schema.sql`
-- 旧版草案：`references/legacy/legacy-requirements.md`（仅做历史参考，不作为当前实现依据）
 
 ## 目录约定
 
@@ -275,6 +279,22 @@ python scripts/occd_utils.py commit-push \
 
 - 默认只提交明确路径
 - 只有用户明确接受时才使用 `--all`
+
+## 推荐读取顺序
+
+### 主代理首次接手一个 occd 请求时
+
+1. 先读 `references/main-agent-runbook.md`
+2. 再读 `references/occd-utils-commands.md`
+3. 需要 spawn 子代理时读 `references/subagent-prompt-template.md`
+4. 需要判断报告时读 `references/report-triage-guide.md`
+5. 收尾时读 `references/finalize-checklist.md`
+
+### 子代理执行 source 任务时
+
+1. 读 source 任务文件本身
+2. 再读 `references/task-report-template.md`
+3. 如主代理 prompt 未写清，再参考 `references/subagent-prompt-template.md`
 
 ## controller 与 utils 的职责分工
 

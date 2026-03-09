@@ -346,6 +346,8 @@ python scripts/occd_utils.py run-tests --repo <repo>
 
 ## 9. controller 辅助命令
 
+controller 只负责告诉主代理“下一步建议做什么”，不直接替代主代理做文本判断、sessions_spawn 或报告分诊。
+
 ### repo-status
 
 返回单仓库的下一步动作：
@@ -375,4 +377,35 @@ python scripts/occd_controller.py global-status --work-dir ~/projects
 
 ```bash
 python scripts/occd_controller.py poll-plan --work-dir ~/projects
+```
+
+### batch-ready
+
+检查某个 requirement 的某个 `XXX` 批次是否已经可以 spawn。
+
+```bash
+python scripts/occd_controller.py batch-ready \
+  --repo <repo> \
+  --req-id github-myapp:feature.md \
+  --xxx 001
+```
+
+### finalize-ready
+
+检查某个 requirement 是否已满足 finalize 条件。
+
+```bash
+python scripts/occd_controller.py finalize-ready \
+  --repo <repo> \
+  --req-id github-myapp:feature.md
+```
+
+### retry-plan
+
+列出 requirement 下当前失败任务，供主代理结合 task report 做重试分诊。
+
+```bash
+python scripts/occd_controller.py retry-plan \
+  --repo <repo> \
+  --req-id github-myapp:feature.md
 ```

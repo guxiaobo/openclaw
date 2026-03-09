@@ -1,4 +1,0 @@
-{
-  "$comment": "已废弃。状态管理已迁移至 occd.db（SQLite），schema 见 occd-db-schema.sql。此文件保留仅供参考旧版本格式。",
-  "$deprecated": true
-}

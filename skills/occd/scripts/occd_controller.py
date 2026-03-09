@@ -31,6 +31,17 @@ def output(data: Any):
     print(json.dumps(data, ensure_ascii=False, indent=2))
 
 
+def requirement_detail(repo: Path, req_id: str) -> dict[str, Any]:
+    return run_util("db-get-req", "--repo", str(repo), "--req-id", req_id)
+
+
+def summarize_batch(batch: list[dict[str, Any]]) -> dict[str, Any]:
+    summary = {"total": len(batch), "by_status": {}, "task_ids": [t["id"] for t in batch]}
+    for task in batch:
+        summary["by_status"][task["status"]] = summary["by_status"].get(task["status"], 0) + 1
+    return summary
+
+
 def next_batch_for_repo(repo: Path) -> dict[str, Any]:
     pending = run_util("db-list-pending-reqs", "--repo", str(repo))
     requirements = pending.get("requirements", [])
@@ -56,7 +67,7 @@ def next_batch_for_repo(repo: Path) -> dict[str, Any]:
                 "last_req_commit": req.get("last_req_commit"),
             }
         if status == "decomposed":
-            detail = run_util("db-get-req", "--repo", str(repo), "--req-id", req_id)
+            detail = requirement_detail(repo, req_id)
             sources = detail.get("sources", [])
             if not sources:
                 return {
@@ -78,6 +89,7 @@ def next_batch_for_repo(repo: Path) -> dict[str, Any]:
                         "req_file": req["filename"],
                         "xxx": xxx,
                         "tasks": [s for s in batch if s["status"] in {"pending", "failed"}],
+                        "summary": summarize_batch(batch),
                     }
                 if statuses <= {"done"}:
                     continue
@@ -88,12 +100,14 @@ def next_batch_for_repo(repo: Path) -> dict[str, Any]:
                     "req_file": req["filename"],
                     "xxx": xxx,
                     "tasks": batch,
+                    "summary": summarize_batch(batch),
                 }
             return {
                 "repo": str(repo),
                 "action": "finalize_requirement",
                 "req_id": req_id,
                 "req_file": req["filename"],
+                "sources_total": len(sources),
             }
 
     return {"repo": str(repo), "action": "idle"}
@@ -119,6 +133,53 @@ def cmd_poll_plan(args):
     output({"work_dir": str(work_dir), "plan": plan})
 
 
+def cmd_batch_ready(args):
+    repo = Path(args.repo)
+    detail = requirement_detail(repo, args.req_id)
+    sources = detail.get("sources", [])
+    batch = [s for s in sources if s["xxx"] == args.xxx]
+    statuses = {s["status"] for s in batch}
+    ready = bool(batch) and any(s in {"pending", "failed"} for s in statuses) and not any(s in {"running", "spawned"} for s in statuses)
+    output({
+        "repo": str(repo),
+        "req_id": args.req_id,
+        "xxx": args.xxx,
+        "ready": ready,
+        "summary": summarize_batch(batch),
+        "tasks": [s for s in batch if s["status"] in {"pending", "failed"}],
+    })
+
+
+def cmd_finalize_ready(args):
+    repo = Path(args.repo)
+    detail = requirement_detail(repo, args.req_id)
+    sources = detail.get("sources", [])
+    all_done = bool(sources) and all(s["status"] == "done" for s in sources)
+    batches = sorted({s["xxx"] for s in sources})
+    output({
+        "repo": str(repo),
+        "req_id": args.req_id,
+        "ready": all_done,
+        "sources_total": len(sources),
+        "batches": batches,
+        "not_done": [s["id"] for s in sources if s["status"] != "done"],
+    })
+
+
+def cmd_retry_plan(args):
+    repo = Path(args.repo)
+    detail = requirement_detail(repo, args.req_id)
+    sources = detail.get("sources", [])
+    failed = [s for s in sources if s["status"] == "failed"]
+    output({
+        "repo": str(repo),
+        "req_id": args.req_id,
+        "failed_tasks": [s["id"] for s in failed],
+        "retry_candidates": failed,
+        "advice": "先读取 task report，再决定是直接重试、回退到上游 coding/test-write、还是转 review。",
+    })
+
+
 def main():
     p = argparse.ArgumentParser(prog="occd_controller", description="OCCD 编排辅助脚本")
     sub = p.add_subparsers(dest="cmd")
@@ -134,6 +195,22 @@ def main():
     s = sub.add_parser("poll-plan", help="先 pull/scan，再返回全局下一步动作")
     s.add_argument("--work-dir", required=True)
     s.set_defaults(func=cmd_poll_plan)
+
+    s = sub.add_parser("batch-ready", help="检查指定 requirement 的某个批次是否可 spawn")
+    s.add_argument("--repo", required=True)
+    s.add_argument("--req-id", required=True)
+    s.add_argument("--xxx", required=True)
+    s.set_defaults(func=cmd_batch_ready)
+
+    s = sub.add_parser("finalize-ready", help="检查 requirement 是否可 finalize")
+    s.add_argument("--repo", required=True)
+    s.add_argument("--req-id", required=True)
+    s.set_defaults(func=cmd_finalize_ready)
+
+    s = sub.add_parser("retry-plan", help="列出 requirement 下失败任务，供主代理重试分诊")
+    s.add_argument("--repo", required=True)
+    s.add_argument("--req-id", required=True)
+    s.set_defaults(func=cmd_retry_plan)
 
     args = p.parse_args()
     if not hasattr(args, "func"):
