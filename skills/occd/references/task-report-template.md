@@ -2,13 +2,13 @@
 
 # 文件名：report-{task_id}-{YYYYMMDDTHHMMSS}.md
 
-# 位置：occd/task/
+# 位置：occd/report/
 
 # 写入者：子代理（执行完成后写入）
 
 ---
 
-task_id: req001-001-001-coding # 对应 source/ 下的任务 ID
+task_id: req001-001-001-coding # 对应 task/ 下的任务 ID
 task_type: coding # coding | test-write | test-run
 session_key: sess_xxxx # 执行本次任务的子代理 session key
 started_at: 2026-03-09T09:45:00+08:00
@@ -40,7 +40,7 @@ outcome: success # success | failure | partial
 
 ## 验收条件检查
 
-> 对照 source 任务文件中的验收条件逐条确认。
+> 对照 task 任务文件中的验收条件逐条确认。
 
 - [x] POST /api/login 返回 200 和 token
 - [x] 密码错误返回 401

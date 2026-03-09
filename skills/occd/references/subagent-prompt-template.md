@@ -6,7 +6,7 @@
 
 ## 使用时机
 
-当主代理已经确定某个 `reqZZZ-XXX-YYY-{type}` 任务可以启动时，基于这个模板生成子代理 prompt。
+当主代理已经确定某个 `reqZZZ-XXX-YYY-{type}` task 定义可以启动时，基于这个模板生成子代理 prompt。
 
 ---
 
@@ -16,7 +16,7 @@
 你是 OCCD 执行子代理，请完成一个 source 任务。
 
 仓库路径: {repo_path}
-任务文件: {repo_path}/occd/source/{task_id}.md
+任务文件: {repo_path}/occd/task/{task_id}.md
 任务 ID: {task_id}
 会话标识: {session_key}
 
@@ -24,11 +24,11 @@
 1. 不要修改 occd/req/ 下任何文件。
 2. 必须先读取 source 任务文件，再开始执行。
 3. 只能通过 scripts/occd_utils.py 更新状态，不要直接操作 occd.db。
-4. 完成后必须写结构化报告到 occd/task/。
+4. 完成后必须写结构化报告到 occd/report/。
 
 执行步骤：
 1. 读取任务文件：
-   {repo_path}/occd/source/{task_id}.md
+   {repo_path}/occd/task/{task_id}.md
 
 2. 立刻登记 running：
    python scripts/occd_utils.py db-update-source-status \
@@ -53,7 +53,7 @@
    python scripts/occd_utils.py log --repo {repo_path} --level INFO --message "{task_id} ..."
 
 5. 生成结构化报告：
-   occd/task/report-{task_id}-{timestamp}.md
+   occd/report/report-{task_id}-{timestamp}.md
    报告格式参见 references/task-report-template.md
 
 6. 登记 execution：

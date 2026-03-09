@@ -60,7 +60,7 @@ python scripts/occd_utils.py release-lock --repo ~/projects/github-myapp
 
 ### db-init
 
-初始化仓库的 `occd.db`，并在 `.gitattributes` 写入：
+初始化仓库的标准目录（`req/ task/ report/ review/ logs/`）、`occd.db`，并在 `.gitattributes` 写入：
 
 ```text
 occd/occd.db binary
@@ -151,7 +151,7 @@ python scripts/occd_utils.py write-review \
 
 ### write-tasks
 
-将主代理拆分后的 source 任务写入 `occd/source/`，并建立 DB 记录。
+将主代理拆分后的任务定义写入 `occd/task/`，并建立 DB 记录。
 
 ```bash
 python scripts/occd_utils.py write-tasks \
@@ -347,6 +347,8 @@ python scripts/occd_utils.py run-tests --repo <repo>
 ## 9. controller 辅助命令
 
 controller 只负责告诉主代理“下一步建议做什么”，不直接替代主代理做文本判断、sessions_spawn 或报告分诊。
+
+controller 的任务状态判断只依赖 SQLite，不扫描 `occd/report/` 目录来推断状态。
 
 ### repo-status
 

@@ -1,6 +1,6 @@
 # 报告解析与分诊指南
 
-主代理读取 `occd/task/report-*.md` 后，按下面规则分诊。
+主代理读取 `occd/report/report-*.md` 内容后，按下面规则分诊；但子任务运行状态（pending / spawned / running / done / failed）仍以 SQLite 为准。
 
 ---
 

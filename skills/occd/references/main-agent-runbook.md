@@ -29,6 +29,8 @@ python scripts/occd_controller.py poll-plan --work-dir <work_dir>
 
 结果里每个 repo 会给出一个 action。
 
+补充约束：controller 与主代理都应以 SQLite 状态为准，不扫描 `occd/report/` 目录来反推任务状态。
+
 ---
 
 ## action = analyze_requirement
@@ -105,7 +107,7 @@ python scripts/occd_utils.py acquire-lock --repo <repo_path>
 检查该批次下任务：
 
 - 只要存在 `running / spawned`，就继续等待
-- 对已结束任务，读取对应 `occd/task/report-*.md`
+- 对已结束任务，读取对应 `occd/report/report-*.md` 了解细节；但是否 running/done/failed 一律以 SQLite 为准
 - 如果报告 outcome = `failure`，生成 retry plan
 
 ---

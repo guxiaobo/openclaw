@@ -32,13 +32,13 @@ CREATE TABLE IF NOT EXISTS reviews (
 );
 
 -- ─────────────────────────────────────────
--- 子任务表（对应 occd/source/ 下的 prompt 文件）
+-- 子任务表（对应 occd/task/ 下的任务定义文件）
 -- 类型：coding | test-write | test-run
 -- ─────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS sources (
     id            TEXT PRIMARY KEY,          -- reqZZZ-XXX-YYY-{type}，如 req001-001-001-coding
     req_id        TEXT NOT NULL REFERENCES requirements(id),
-    filename      TEXT NOT NULL,             -- source/ 下的文件名
+    filename      TEXT NOT NULL,             -- task/ 下的文件名
     task_type     TEXT NOT NULL,             -- coding | test-write | test-run
     xxx           TEXT NOT NULL,             -- 串行批次号，如 001
     yyy           TEXT NOT NULL,             -- 并行子序号，如 001
@@ -52,13 +52,13 @@ CREATE TABLE IF NOT EXISTS sources (
 );
 
 -- ─────────────────────────────────────────
--- 执行记录表（对应 occd/task/ 下的报告文件）
+-- 执行记录表（对应 occd/report/ 下的报告文件）
 -- 每次子代理执行一个 source 任务对应一条记录
 -- ─────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS executions (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     source_id     TEXT NOT NULL REFERENCES sources(id),
-    report_file   TEXT NOT NULL,             -- task/ 下的报告文件名，如 report-req001-001-001-coding-20260309T094500.md
+    report_file   TEXT NOT NULL,             -- report/ 下的报告文件名，如 report-req001-001-001-coding-20260309T094500.md
     session_key   TEXT,                      -- 执行本次任务的子代理 session key
     outcome       TEXT NOT NULL,             -- success | failure | partial
     summary       TEXT,                      -- 关键变更/结论摘要（从报告中提取）

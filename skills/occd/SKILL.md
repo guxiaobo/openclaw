@@ -39,8 +39,8 @@ description: OCCD (OpenCode Continuous Developing) - 多仓库持续开发编排
 github-<repo>/
   occd/
     req/       # 需求文档，只读
-    source/    # 主代理生成的子任务 prompt
-    task/      # 子代理写入的结构化报告
+    task/      # 主代理生成的子任务定义文件
+    report/    # 子代理写入的结构化报告
     review/    # 主代理生成的需求澄清文件
     logs/      # 原始运行日志
     occd.db    # SQLite 状态库
@@ -51,7 +51,7 @@ github-<repo>/
 - **绝不修改** `occd/req/` 里的需求文件
 - **主代理负责编排与决策**；子代理负责执行单个 source 任务
 - **子代理不得直接操作 SQLite 文件**；只能通过 `scripts/occd_utils.py` 暴露的受控命令更新状态
-- **主代理基于 `task/report-*.md` 做决策**，不要只信会话口头描述
+- **主代理与 controller 的状态判断以 SQLite 数据库为准**；`report/report-*.md` 只用于补充上下文、失败原因和变更摘要，不用于反推子任务状态
 - **每个 coding / test-write 任务独立 worktree / 分支**
 - **只提交本次任务相关文件**；不要默认 `git add -A`
 
@@ -71,7 +71,7 @@ python scripts/occd_utils.py config-init \
 
 ### 2) 初始化目标仓库
 
-对每个受管仓库执行：
+对每个受管仓库执行（会同时初始化 `req/ task/ report/ review/ logs/` 目录与 `occd.db`）：
 
 ```bash
 python scripts/occd_utils.py db-init --repo ~/projects/github-myapp
@@ -164,7 +164,7 @@ python scripts/occd_utils.py check-new-commit \
 你是 OCCD 执行子代理，请完成一个 source 任务。
 
 仓库路径: <repo_path>
-任务文件: <repo_path>/occd/source/<task_id>.md
+任务文件: <repo_path>/occd/task/<task_id>.md
 
 要求：
 1. 读取任务文件
@@ -176,7 +176,7 @@ python scripts/occd_utils.py check-new-commit \
    - 在独立 worktree 中完成修改
 4. 如果是 test-run：
    - 直接调用 run-tests
-5. 写结构化报告到 occd/task/report-<task_id>-<timestamp>.md
+5. 写结构化报告到 occd/report/report-<task_id>-<timestamp>.md
 6. 调用 db-add-execution 登记本次执行
 7. 再调用 db-update-source-status 标记 done / failed
 ```
@@ -202,7 +202,7 @@ python scripts/occd_utils.py check-new-commit \
 
 ## 主代理如何读报告并决策
 
-读取 `occd/task/report-{task_id}-*.md` 后：
+读取 `occd/report/report-{task_id}-*.md` 内容并结合 SQLite 状态后：
 
 - `success`：标记 source 为 `done`
 - `failure` 且未超过 `max_fix_retries`：重试该 source
@@ -312,7 +312,7 @@ python scripts/occd_utils.py commit-push \
 
 - config 管理
 - DB 初始化与状态变更
-- review/source/task 相关文件写入
+- review/task/report 相关文件写入
 - git worktree / merge / commit / push
 - 测试执行
 - repo 锁

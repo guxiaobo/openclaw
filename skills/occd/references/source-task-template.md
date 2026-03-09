@@ -2,7 +2,7 @@
 
 # 文件名：reqZZZ-XXX-YYY-{type}.md
 
-# 位置：occd/source/
+# 位置：occd/task/
 
 # 写入者：主代理
 
@@ -49,6 +49,6 @@ depends_on: [] # 前置任务 ID 列表（空表示无依赖）
 ## 报告要求
 
 完成后将执行结果报告写入：
-`occd/task/report-{task_id}-{YYYYMMDDTHHMMSS}.md`
+`occd/report/report-{task_id}-{YYYYMMDDTHHMMSS}.md`
 
 格式见 `references/task-report-template.md`。

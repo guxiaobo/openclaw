@@ -4,6 +4,9 @@ occd_controller.py - OCCD 编排辅助脚本
 
 定位：给 OpenClaw 主代理提供“下一步该做什么”的结构化输出；
 真正的 sessions_spawn / 任务分析 / 文本判断仍由主代理完成。
+
+状态判断只以 SQLite（occd.db）中的 requirement/source/execution 记录为准，
+不扫描 report 目录来推断子任务状态。
 """
 
 from __future__ import annotations

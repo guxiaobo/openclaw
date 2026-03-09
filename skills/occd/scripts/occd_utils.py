@@ -295,6 +295,8 @@ def cmd_config_set(args):
 def cmd_db_init(args):
     repo = Path(args.repo)
     ensure_repo(repo)
+    for name in ("req", "task", "report", "review", "logs"):
+        (repo / "occd" / name).mkdir(parents=True, exist_ok=True)
     init_db(repo)
     ga = repo / ".gitattributes"
     line = "occd/occd.db binary\n"
@@ -552,8 +554,8 @@ def cmd_write_tasks(args):
     if not isinstance(tasks, list) or not tasks:
         fail("tasks must be a non-empty JSON array")
     req_id = make_req_id(repo, req_name)
-    source_dir = repo / "occd" / "source"
-    source_dir.mkdir(parents=True, exist_ok=True)
+    task_dir = repo / "occd" / "task"
+    task_dir.mkdir(parents=True, exist_ok=True)
     conn = get_conn(repo)
     row = conn.execute("SELECT status FROM requirements WHERE id=?", (req_id,)).fetchone()
     if not row:
@@ -599,11 +601,11 @@ depends_on: {json.dumps(depends_on, ensure_ascii=False)}
 ## 报告要求
 
 完成后将执行结果报告写入：
-`occd/task/report-{task_id}-{{YYYYMMDDTHHMMSS}}.md`
+`occd/report/report-{task_id}-{{YYYYMMDDTHHMMSS}}.md`
 
 格式见 `references/task-report-template.md`。
 """
-        (source_dir / filename).write_text(content + "\n", encoding="utf-8")
+        (task_dir / filename).write_text(content + "\n", encoding="utf-8")
         conn.execute(
             "INSERT OR REPLACE INTO sources(id,req_id,filename,task_type,xxx,yyy,status,branch,retry_count,created_at,updated_at) VALUES(?,?,?,?,?,?,'pending',?,0,?,?)",
             (task_id, req_id, filename, task_type, xxx, yyy, branch, now, now),
