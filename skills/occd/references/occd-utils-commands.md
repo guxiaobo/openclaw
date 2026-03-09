@@ -20,7 +20,9 @@ python scripts/occd_utils.py config-init \
   --max-agents 8 \
   --max-fix-retries 5 \
   --base-branch main \
-  --auto-push
+  --auto-push \
+  --opencode-path /usr/local/bin/opencode \
+  --opencode-args run
 ```
 
 ### config-show
@@ -34,6 +36,7 @@ python scripts/occd_utils.py config-show
 ```bash
 python scripts/occd_utils.py config-set --poll-interval 120
 python scripts/occd_utils.py config-set --max-agents 4 --no-auto-push
+python scripts/occd_utils.py config-set --opencode-path /usr/local/bin/opencode --opencode-args run
 ```
 
 ---
@@ -141,6 +144,7 @@ python scripts/occd_utils.py db-list-pending-reqs --repo <repo>
 ### write-review
 
 生成需求澄清文件，并把 requirement 标记为 `reviewing`。
+review 文件命名规则为：`<reqId>-XXX.md`，其中 `XXX` 为分析运行序号。
 
 ```bash
 python scripts/occd_utils.py write-review \
@@ -349,6 +353,8 @@ python scripts/occd_utils.py run-tests --repo <repo>
 controller 只负责告诉主代理“下一步建议做什么”，不直接替代主代理做文本判断、sessions_spawn 或报告分诊。
 
 controller 的任务状态判断只依赖 SQLite，不扫描 `occd/report/` 目录来推断状态。
+
+同样地，需求理解、review 决策、task 拆分不由 Python 脚本完成，而是由主代理通过大语言模型完成；工具脚本只负责结构化落地。
 
 ### repo-status
 

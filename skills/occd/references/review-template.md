@@ -1,7 +1,8 @@
 # 需求澄清文件模板
 
-> 文件名规则：`occd/review/<reqname>-review-XXX.md`
-> XXX 为递增序号，数字越大越新
+> 文件名规则：`occd/review/<reqId>-XXX.md`
+> 其中 `reqId` 为 requirement id 中将 `:` 替换为 `-` 的结果，例如 `github-myapp-feature.md`
+> XXX 为分析运行序号，数字越大越新
 
 ---
 

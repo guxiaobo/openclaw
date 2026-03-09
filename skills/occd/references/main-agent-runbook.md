@@ -20,6 +20,8 @@ python scripts/occd_utils.py config-show
 - `max_fix_retries`
 - `base_branch`
 - `auto_push`
+- `opencode_path`
+- `opencode_args`
 
 ### Step 2. 获取全局计划
 
@@ -36,9 +38,26 @@ python scripts/occd_controller.py poll-plan --work-dir <work_dir>
 ## action = analyze_requirement
 
 1. 读取 `occd/req/<req_file>`
-2. 判断是否明确
-3. 不明确：调用 `write-review`
-4. 明确：拆分任务并调用 `write-tasks`
+2. 由主代理使用大语言模型分析需求
+3. 判断是否明确
+4. 不明确：由大语言模型决定需要澄清，并生成 review 内容；然后调用 `write-review`
+5. 明确：由大语言模型完成任务拆分与串并行规划，再调用 `write-tasks`
+
+关键约束：
+
+- Python 脚本不负责理解需求，也不负责自动拆分任务
+- Python 脚本只负责把主代理已经决定好的 task / review 落库、写文件、更新状态
+- 若原需求存在关键不确定项，主代理必须优先生成 review，而不是勉强拆任务
+
+### 给大语言模型的分析提示要点
+
+主代理在分析 req 时，应明确提示大语言模型：
+
+- 先判断需求是否足够明确
+- 若存在关键不确定项，先输出 review 问题，不要拆分 task
+- 只有在需求明确时，才输出 task 拆分结果
+- task 拆分要同时给出串行批次 `XXX` 与批内并行 `YYY` 的建议
+- `coding`、`test-write`、`test-run` 的边界要清楚
 
 ### 需求拆分建议
 
@@ -92,6 +111,8 @@ python scripts/occd_utils.py acquire-lock --repo <repo_path>
 对本批次每个 task：
 
 - 根据 `references/subagent-prompt-template.md` 生成 prompt
+- prompt 中明确要求子代理实际调用 OpenCode 执行 coding / test-write / 需要修复的测试任务
+- OpenCode 启动命令优先使用配置中的 `opencode_path` 与 `opencode_args`
 - 使用 `sessions_spawn(mode="run")`
 - 把返回的 session key 回填到 `db-update-source-status --status spawned --session-key <key>`
 

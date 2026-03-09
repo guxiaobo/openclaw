@@ -260,6 +260,8 @@ def cmd_config_init(args):
         "max_fix_retries": args.max_fix_retries,
         "base_branch": args.base_branch,
         "auto_push": args.auto_push,
+        "opencode_path": args.opencode_path,
+        "opencode_args": args.opencode_args,
         "updated_at": utcnow_iso(),
     }
     write_json(path, config)
@@ -287,6 +289,10 @@ def cmd_config_set(args):
         data["base_branch"] = args.base_branch
     if args.auto_push is not None:
         data["auto_push"] = args.auto_push
+    if args.opencode_path:
+        data["opencode_path"] = args.opencode_path
+    if args.opencode_args is not None:
+        data["opencode_args"] = args.opencode_args
     data["updated_at"] = utcnow_iso()
     write_json(path, data)
     output({"success": True, "config": str(path), "data": data})
@@ -487,8 +493,8 @@ def cmd_write_review(args):
     last_commit = r.stdout.strip()
     review_dir = repo / "occd" / "review"
     review_dir.mkdir(parents=True, exist_ok=True)
-    base = Path(req_name).stem
-    filename = f"{base}-review-{round_num:03d}.md"
+    safe_req_id = req_id.replace(":", "-")
+    filename = f"{safe_req_id}-{round_num:03d}.md"
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
     qs = "\n".join(f"{i + 1}. {q}" for i, q in enumerate(questions))
     content = f"""# 需求澄清请求 #{round_num:03d}
@@ -523,7 +529,7 @@ git push
         "UPDATE requirements SET status='reviewing', review_rounds=?, last_req_commit=?, updated_at=? WHERE id=?",
         (round_num, last_commit, now, req_id),
     )
-    review_id = f"review-{base}-{round_num:03d}"
+    review_id = f"review-{safe_req_id}-{round_num:03d}"
     conn.execute("INSERT INTO reviews(id,req_id,filename,created_at) VALUES(?,?,?,?)", (review_id, req_id, filename, now))
     log_event(conn, "req", req_id, row["status"], "reviewing", note=f"round {round_num}")
     conn.commit()
@@ -903,6 +909,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--max-fix-retries", type=int, default=5)
     s.add_argument("--base-branch", default="main")
     s.add_argument("--auto-push", action="store_true")
+    s.add_argument("--opencode-path", default="opencode")
+    s.add_argument("--opencode-args", default="run")
     s.set_defaults(func=cmd_config_init)
 
     s = sp("config-show", "显示全局配置")
@@ -916,6 +924,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--max-agents", type=int)
     s.add_argument("--max-fix-retries", type=int)
     s.add_argument("--base-branch")
+    s.add_argument("--opencode-path")
+    s.add_argument("--opencode-args")
     s.add_argument("--auto-push", dest="auto_push", action="store_true")
     s.add_argument("--no-auto-push", dest="auto_push", action="store_false")
     s.set_defaults(auto_push=None, func=cmd_config_set)

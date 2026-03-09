@@ -44,10 +44,12 @@
           --repo {repo_path} \
           --branch {task_id} \
           --reuse-if-exists
-     b. 在 worktree 中完成代码或测试修改
+     b. 必须委托 OpenCode 执行实际编码或测试编写，不要由子代理直接手写实现
+     c. OpenCode 命令优先使用全局配置中的 `{opencode_path}` 与 `{opencode_args}`
    - 若是 test-run：
-     a. 直接运行：
+     a. 可直接运行：
         python scripts/occd_utils.py run-tests --repo {repo_path}
+     b. 若测试失败后需要修复，应回到 OpenCode 执行修复任务
 
 4. 将关键过程写入 occd/logs/：
    python scripts/occd_utils.py log --repo {repo_path} --level INFO --message "{task_id} ..."
@@ -81,6 +83,7 @@
 ## 对 coding / test-write 子代理的额外要求
 
 - 在对应 worktree 中工作，不要直接在主仓库改代码
+- 实际编码、测试编写必须委托 OpenCode 完成
 - 优先提交小而清晰的变更
 - 报告中明确列出修改文件
 - 如果因需求不清无法继续，结果写 `partial`，不要瞎猜

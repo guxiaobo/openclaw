@@ -10,11 +10,12 @@ description: OCCD (OpenCode Continuous Developing) - 多仓库持续开发编排
 目标：收到用户“开始持续开发”的指令后，驱动多仓库 OCCD 流程：
 
 1. 拉取仓库与扫描需求
-2. 判断需求是否明确
-3. 生成 review 或拆分 source 任务
+2. 由主代理使用大语言模型判断需求是否明确
+3. 由主代理使用大语言模型生成 review 或拆分 task 任务
 4. 对当前串行批次并发启动子代理
-5. 读取报告并推进下一步
-6. 合并、测试、提交、推送
+5. 子代理委托 OpenCode 完成实际编码 / 测试编写 / 必要修复
+6. 读取报告并推进下一步
+7. 合并、测试、提交、推送
 
 ## 先读什么
 
@@ -30,6 +31,12 @@ description: OCCD (OpenCode Continuous Developing) - 多仓库持续开发编排
 - finalize 清单：`references/finalize-checklist.md`
 - review 格式：`references/review-template.md`
 - DB schema：`references/occd-db-schema.sql`
+
+## 设计原则
+
+- req 内容是否明确、是否应生成 review、以及如何拆分 task，全部由主代理通过大语言模型判断
+- Python 脚本不做需求理解，只做写文件、写数据库、git/worktree/test 等受控操作
+- 子代理本身是任务执行编排者；实际编码、测试编写和需要修复的实现应委托 OpenCode 完成
 
 ## 目录约定
 
@@ -49,7 +56,8 @@ github-<repo>/
 ## 核心约束
 
 - **绝不修改** `occd/req/` 里的需求文件
-- **主代理负责编排与决策**；子代理负责执行单个 source 任务
+- **主代理负责编排与决策**；需求理解、review 决策、task 拆分与串并行规划必须由主代理通过大语言模型完成
+- **子代理负责执行单个 task**；实际编码、测试编写与需要修复的实现工作必须委托 OpenCode 完成
 - **子代理不得直接操作 SQLite 文件**；只能通过 `scripts/occd_utils.py` 暴露的受控命令更新状态
 - **主代理与 controller 的状态判断以 SQLite 数据库为准**；`report/report-*.md` 只用于补充上下文、失败原因和变更摘要，不用于反推子任务状态
 - **每个 coding / test-write 任务独立 worktree / 分支**
@@ -66,7 +74,9 @@ python scripts/occd_utils.py config-init \
   --max-agents 8 \
   --max-fix-retries 5 \
   --base-branch main \
-  --auto-push
+  --auto-push \
+  --opencode-path /usr/local/bin/opencode \
+  --opencode-args run
 ```
 
 ### 2) 初始化目标仓库
@@ -111,9 +121,9 @@ controller 不会替你做 agent 决策，只会告诉你：
 
 1. `git-pull --ff-only`
 2. 读取 `occd/req/<reqname>`
-3. 判断是否明确：
-   - 不明确：调用 `write-review`
-   - 明确：拆分任务，调用 `write-tasks`
+3. 由主代理用大语言模型判断是否明确：
+   - 不明确：由大语言模型生成澄清问题，再调用 `write-review`
+   - 明确：由大语言模型拆分任务并规划串并行，再调用 `write-tasks`
 
 拆分任务时统一使用：
 
@@ -146,7 +156,8 @@ python scripts/occd_utils.py check-new-commit \
 
 ### 场景 D：可启动一批子任务（action = `spawn_batch`）
 
-对该 `XXX` 批次内状态为 `pending` / `failed` 的 source 任务并发 `sessions_spawn`。
+对该 `XXX` 批次内状态为 `pending` / `failed` 的 task 并发 `sessions_spawn`。
+子代理 prompt 中必须明确：coding / test-write / 需要修复的实现工作由 OpenCode 完成，OpenCode 启动命令优先使用全局配置中的 `opencode_path` 与 `opencode_args`。
 
 ## 子代理 prompt 建议模板
 
