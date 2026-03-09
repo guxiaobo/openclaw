@@ -4,11 +4,25 @@
 
 ---
 
+## DB 初始化
+
+### db-init
+
+初始化仓库的 occd.db，并在 .gitattributes 中写入 `occd/occd.db binary`（幂等，重复调用安全）。
+
+```bash
+python occd_utils.py db-init --repo ~/projects/github-myapp
+```
+
+输出：`{ "success": true, "db": "/path/to/occd/occd.db" }`
+
+---
+
 ## 仓库扫描
 
 ### scan-repos
 
-扫描 work_dir 下所有 github-\* 仓库，比对 occd.db 后返回需要处理的需求列表（自动去重）。
+扫描 work_dir 下所有 `github-*` 仓库，比对 occd.db 后返回需要处理的需求列表（自动去重）。
 
 ```bash
 python occd_utils.py scan-repos --work-dir ~/projects
@@ -31,7 +45,7 @@ python occd_utils.py scan-repos --work-dir ~/projects
 }
 ```
 
-内部逻辑：计算每个 req 文件的 content_hash，与 occd.db 比对，跳过已处理且 hash 未变的需求。
+内部逻辑：计算每个 req 文件的 SHA256 content_hash，与 occd.db 比对，跳过已处理且 hash 未变且 status=done 的需求；hash 变化则重置为 new。
 
 ### git-pull
 
@@ -44,22 +58,13 @@ python occd_utils.py git-pull --repo ~/projects/github-myapp
 检查需求文件是否有新 commit（用于 review 回复检测）。
 
 ```bash
-python occd_utils.py check-new-commit --repo <repo> --file occd/req/feature.md --last-commit abc1234
+python occd_utils.py check-new-commit \
+  --repo ~/projects/github-myapp \
+  --file occd/req/feature.md \
+  --last-commit abc1234
 ```
 
 输出：`{ "has_new_commit": true, "current_commit": "def5678" }`
-
----
-
-## DB 初始化
-
-### db-init
-
-初始化仓库的 occd.db（首次使用时调用，同时写入 .gitattributes）。
-
-```bash
-python occd_utils.py db-init --repo <repo>
-```
 
 ---
 
@@ -78,16 +83,18 @@ python occd_utils.py db-upsert-req --repo <repo> --filename feature.md
 ### db-update-req-status
 
 ```bash
-python occd_utils.py db-update-req-status --req-id <req_id> --status reviewing
-python occd_utils.py db-update-req-status --req-id <req_id> --status decomposed
-python occd_utils.py db-update-req-status --req-id <req_id> --status done
-python occd_utils.py db-update-req-status --req-id <req_id> --status failed --note "原因"
+python occd_utils.py db-update-req-status --repo <repo> --req-id <req_id> --status reviewing
+python occd_utils.py db-update-req-status --repo <repo> --req-id <req_id> --status decomposed
+python occd_utils.py db-update-req-status --repo <repo> --req-id <req_id> --status done
+python occd_utils.py db-update-req-status --repo <repo> --req-id <req_id> --status failed --note "原因"
 ```
+
+status 可选值：`new | reviewing | decomposed | done | failed`
 
 ### db-get-req
 
 ```bash
-python occd_utils.py db-get-req --req-id <req_id>
+python occd_utils.py db-get-req --repo <repo> --req-id <req_id>
 ```
 
 输出需求记录详情，包含关联的 reviews、sources 列表。
@@ -106,11 +113,12 @@ python occd_utils.py db-list-pending-reqs --repo <repo>
 
 ### db-upsert-source
 
-新增子任务记录（write-tasks 内部调用，一般不需要单独调用）。
+新增子任务记录（`write-tasks` 内部已自动调用，一般不需要单独调用）。
 
 ```bash
 python occd_utils.py db-upsert-source \
-  --req-id <req_id> \
+  --repo <repo> \
+  --req-id github-myapp:feature.md \
   --task-id req001-001-001-coding \
   --task-type coding \
   --filename req001-001-001-coding.md
@@ -120,7 +128,7 @@ task-type 可选值：`coding | test-write | test-run`
 
 ### db-update-source-status
 
-主代理和子代理（通过此命令汇报）均可调用。
+主代理和子代理均可调用。
 
 ```bash
 # 主代理：spawn 前标记
@@ -139,6 +147,8 @@ python occd_utils.py db-update-source-status \
 python occd_utils.py db-update-source-status \
   --repo <repo> --task req001-001-001-coding --status failed --note "opencode 超时"
 ```
+
+status 可选值：`pending | spawned | running | done | failed`
 
 ### db-list-sources-by-xxx
 
@@ -184,29 +194,45 @@ python occd_utils.py db-list-executions --repo <repo> --task req001-001-001-codi
 
 ### write-review
 
-生成需求澄清文件，更新 DB 状态为 reviewing，写入 reviews 表。
+生成需求澄清文件，同时更新 DB 状态为 reviewing，在 reviews 表写入记录。
 
 ```bash
-python occd_utils.py write-review --repo <repo> --req feature.md \
+python occd_utils.py write-review \
+  --repo <repo> \
+  --req feature.md \
   --questions '["问题1", "问题2"]'
 ```
 
 ### write-tasks
 
-将主代理拆分的子任务写入 occd/source/，同时在 DB 中建立 sources 记录。
+将主代理拆分的子任务写入 `occd/source/`，同时在 DB 中建立 sources 记录，需求状态更新为 decomposed。
 
 ```bash
-python occd_utils.py write-tasks --repo <repo> --req feature.md \
+python occd_utils.py write-tasks \
+  --repo <repo> \
+  --req feature.md \
   --tasks '[{
     "id": "req001-001-001-coding",
     "type": "coding",
     "summary": "实现登录接口",
-    "details": "...",
-    "constraints": "...",
-    "acceptance": "...",
+    "details": "POST /api/login，返回 JWT token",
+    "constraints": "使用 PyJWT>=2.0",
+    "acceptance": "- [ ] 返回 200 和 token\n- [ ] 密码错误返回 401",
+    "depends_on": [],
     "notes": ""
   }]'
 ```
+
+task 对象字段说明：
+
+- `id`：必填，格式 `reqZZZ-XXX-YYY-{type}`
+- `type`：必填，`coding | test-write | test-run`
+- `summary`：背景摘要
+- `details`：详细要求
+- `constraints`：约束条件
+- `acceptance`：验收条件（Markdown checklist）
+- `depends_on`：前置任务 ID 列表
+- `notes`：参考信息
 
 ---
 
@@ -228,7 +254,7 @@ python occd_utils.py remove-worktree --repo <repo> --branch req001-001-001-codin
 
 ### merge-branches
 
-按 commit 时间升序合并同一 XXX 下所有子任务分支。
+按 commit 时间升序合并同一 XXX 下所有 `done` 状态的 coding/test-write 子任务分支。
 
 ```bash
 python occd_utils.py merge-branches --repo <repo> --xxx 001
@@ -248,7 +274,7 @@ python occd_utils.py run-tests --repo <repo>
 
 ### commit-push
 
-提交代码并 push，`--include-db` 同时提交 occd.db（状态同步到远端）。
+提交代码并 push，`--include-db` 同时提交 occd.db（推荐每次状态批次变更后使用）。
 
 ```bash
 python occd_utils.py commit-push \
@@ -263,11 +289,13 @@ python occd_utils.py commit-push \
 
 ### log
 
-写入原始技术日志（追加到 occd/logs/YYYY-MM-DD.log）。
+写入原始技术日志（追加到 `occd/logs/YYYY-MM-DD.log`）。
 
 ```bash
 python occd_utils.py log --repo <repo> --level INFO --message "任务开始"
 ```
+
+level 可选值：`INFO | WARN | ERROR`
 
 ### db-summary
 
