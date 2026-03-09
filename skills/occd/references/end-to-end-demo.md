@@ -64,6 +64,8 @@ python scripts/occd_controller.py poll-plan --work-dir ~/projects
 3. 只有在明确时，才输出 task 拆分方案。
 4. task 拆分结果必须包含：task_id、type、summary、details、constraints、acceptance、depends_on、notes。
 5. 拆分时要区分串行批次 XXX 与批内并行 YYY。
+6. 生成到 `occd/task/` 的每个 task 文件后续会被直接传给 OpenCode，并把文件全文作为提示词运行，所以 task 内容必须自包含、清晰、可直接执行。
+7. 每个 task 尽量控制在 10 分钟以内，优先生成可并发执行的小任务。
 ```
 
 ### 如果大语言模型判断“不明确”

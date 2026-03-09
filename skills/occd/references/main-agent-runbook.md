@@ -58,6 +58,9 @@ python scripts/occd_controller.py poll-plan --work-dir <work_dir>
 - 只有在需求明确时，才输出 task 拆分结果
 - task 拆分要同时给出串行批次 `XXX` 与批内并行 `YYY` 的建议
 - `coding`、`test-write`、`test-run` 的边界要清楚
+- 写入 `occd/task/` 的每个 task 文件会在后续被直接交给 OpenCode，并把文件全文当作提示词运行，因此 task 内容必须完整、自包含、能直接执行
+- 每个 task 的目标工作量尽量控制在 10 分钟以内
+- 优先把任务拆成可并发执行的小任务，除非存在明确依赖关系
 
 ### 需求拆分建议
 
