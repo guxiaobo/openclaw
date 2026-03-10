@@ -88,6 +88,7 @@ QUERY_RETRIES = 3
 RETRY_BACKOFF_BASE = 2
 SAVE_CAPTCHA = False
 CAPTCHA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "captcha-debug")
+BROWSER_DEBUG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "browser-debug")
 BROWSER_CHANNEL = "chrome"
 
 
@@ -385,6 +386,27 @@ def save_records(query_name, query_card, results, queried_at, total_size=0):
 def make_captcha_id():
     """生成 UUID 格式的验证码 ID"""
     return str(uuid.uuid4()).replace("-", "")
+
+
+def save_browser_debug(page, tag):
+    os.makedirs(BROWSER_DEBUG_DIR, exist_ok=True)
+    ts = datetime.now().strftime('%Y%m%d-%H%M%S')
+    safe_tag = re.sub(r'[^0-9A-Za-z_-]', '_', tag)
+    png_path = os.path.join(BROWSER_DEBUG_DIR, f"{ts}_{safe_tag}.png")
+    html_path = os.path.join(BROWSER_DEBUG_DIR, f"{ts}_{safe_tag}.html")
+    meta_path = os.path.join(BROWSER_DEBUG_DIR, f"{ts}_{safe_tag}.txt")
+    try:
+        page.screenshot(path=png_path, full_page=True)
+        with open(html_path, 'w', encoding='utf-8') as f:
+            f.write(page.content())
+        with open(meta_path, 'w', encoding='utf-8') as f:
+            f.write(f"url={page.url}\n")
+            f.write(f"title={page.title()}\n")
+        print(f"[浏览器模式] 已保存现场: {png_path} | {html_path} | {meta_path}")
+        return png_path, html_path, meta_path
+    except Exception as e:
+        print(f"[浏览器模式] 保存现场失败: {e}")
+        return None, None, None
 
 
 def save_captcha_image(image_bytes, captcha_id, attempt, recognized_text=None):
@@ -687,9 +709,20 @@ def query_fzw_browser(name=None, card_num=None, max_retry=3, fetch_all_pages=Tru
         context = browser.new_context()
         page = context.new_page()
         try:
+            netlog = []
+            def _on_response(resp):
+                u = resp.url
+                if 'zxgk.court.gov.cn' in u:
+                    netlog.append((resp.status, u, resp.headers.get('content-type', '')))
+            page.on('response', _on_response)
+
             page.goto(f"{BASE_URL}/", wait_until="domcontentloaded", timeout=60000)
             page.wait_for_timeout(1500)
             print(f"[浏览器模式] 首页已打开: {page.url}")
+            content = page.content().strip()
+            if content in ('<html><head></head><body></body></html>', '<html><head></head><body></body></html\n') or len(content) < 80:
+                print(f"[浏览器模式] 页面内容异常偏空，最近网络响应: {netlog[-8:]}")
+                save_browser_debug(page, 'empty_page')
 
             all_results = []
             query_succeeded = False
@@ -703,12 +736,15 @@ def query_fzw_browser(name=None, card_num=None, max_retry=3, fetch_all_pages=Tru
                 except Exception as e:
                     last_error = f"browser_captcha_exception:{type(e).__name__}:{e}"
                     print(f"[浏览器模式] 验证码请求异常: {e}")
+                    save_browser_debug(page, f'captcha_exception_try{attempt}')
                     page.reload(wait_until="domcontentloaded", timeout=60000)
                     continue
 
                 if not cap.get("ok") or "image" not in (cap.get("contentType") or ""):
                     last_error = f"browser_captcha_bad:{cap.get('status')}:{cap.get('contentType')}"
                     print(f"[浏览器模式] 验证码失败: status={cap.get('status')} type={cap.get('contentType')}")
+                    print(f"[浏览器模式] 最近网络响应: {netlog[-8:]}")
+                    save_browser_debug(page, f'captcha_bad_try{attempt}')
                     page.reload(wait_until="domcontentloaded", timeout=60000)
                     continue
 
