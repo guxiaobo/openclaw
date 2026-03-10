@@ -244,6 +244,7 @@ python scripts/occd_utils.py write-tasks \
 ### db-update-task-status
 
 主代理与子代理都可以调用，但子代理必须带 `--session-key`。
+注意：所有 DB 写入命令的 `--repo` 都必须是主仓库根路径，若传入 `.occd-worktrees/...` 路径会直接报错拒绝执行。
 
 ```bash
 python scripts/occd_utils.py db-update-task-status \

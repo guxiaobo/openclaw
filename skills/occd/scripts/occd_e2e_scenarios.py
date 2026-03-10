@@ -212,6 +212,52 @@ class Runner:
         assert_true(good["success"] is True, "complete decomposition should pass validator")
         self.results["decomposition_validator"] = {"bad_returncode": bad.returncode, "good": good}
 
+    def scenario_worktree_db_write_rejected(self):
+        repo = self.create_repo("scenario-worktree-db-guard", "github-db-guard")
+        wd = repo.parent
+        self.init_repo(repo)
+        self.init_occd(wd, repo)
+        self.add_req_commit(repo, "feature-guard.md", "实现 guard。\n", "guard req")
+        occd_util("scan-repos", "--work-dir", str(wd))
+        occd_util("write-tasks", "--repo", str(repo), "--req", "feature-guard.md", "--tasks", json.dumps([
+            {
+                "id": "feature-guard-001-001-coding",
+                "type": "coding",
+                "summary": "实现 guard",
+                "details": "编辑 app.py",
+                "constraints": "最小实现",
+                "acceptance": "- [ ] 完成",
+                "depends_on": [],
+                "notes": "无"
+            },
+            {
+                "id": "feature-guard-002-001-test-write",
+                "type": "test-write",
+                "summary": "补测试",
+                "details": "补测试",
+                "constraints": "unittest",
+                "acceptance": "- [ ] 完成",
+                "depends_on": ["feature-guard-001-001-coding"],
+                "notes": "无"
+            },
+            {
+                "id": "feature-guard-003-001-test-run",
+                "type": "test-run",
+                "summary": "跑测试",
+                "details": "执行测试",
+                "constraints": "失败则失败",
+                "acceptance": "- [ ] 完成",
+                "depends_on": ["feature-guard-002-001-test-write"],
+                "notes": "无"
+            }
+        ], ensure_ascii=False))
+        ok = run_json([PY, str(UTIL), "db-update-task-status", "--repo", str(repo), "--task", "feature-guard-001-001-coding", "--status", "spawned", "--session-key", "main-ok"])
+        wt = self.worktree(repo, "feature-guard-001-001-coding")
+        bad = run([PY, str(UTIL), "db-update-task-status", "--repo", str(wt), "--task", "feature-guard-001-001-coding", "--status", "running", "--session-key", "bad-worktree"], check=False)
+        assert_true(ok["success"] is True, "main repo db write should succeed")
+        assert_true(bad.returncode != 0, "worktree db write should be rejected")
+        self.results["worktree_db_write_rejected"] = {"main_ok": ok, "worktree_returncode": bad.returncode, "worktree_stderr": bad.stderr, "worktree_path": str(wt)}
+
     def scenario_multi_commit_interval(self):
         repo = self.create_repo("scenario-multi-commit", "github-interval")
         wd = repo.parent
@@ -324,6 +370,7 @@ class Runner:
         self.scenario_default_skill_config()
         self.scenario_build_opencode_command_prompt_file()
         self.scenario_decomposition_validator()
+        self.scenario_worktree_db_write_rejected()
         self.scenario_multi_commit_interval()
         self.scenario_preflight_batch()
         self.scenario_blocked_then_new_commit()

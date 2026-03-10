@@ -142,6 +142,7 @@ python scripts/occd_utils.py acquire-lock --repo <repo_path>
 - OpenCode 启动命令优先使用配置中的 `opencode_path` 与 `opencode_args`
 - 使用 `sessions_spawn(mode="run")`
 - 把返回的 session key 回填到 `db-update-task-status --status spawned --session-key <key>`
+- 明确要求子代理：所有 DB 写入命令中的 `--repo` 必须是主仓库根路径，不能传 worktree 路径
 
 ### 批内并发建议
 

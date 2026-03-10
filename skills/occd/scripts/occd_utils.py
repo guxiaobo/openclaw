@@ -320,6 +320,15 @@ def ensure_repo(repo: Path):
         fail(f"not a git repository: {repo}")
 
 
+def ensure_main_repo_for_db_writes(repo: Path):
+    resolved = repo.resolve()
+    if ".occd-worktrees" in resolved.parts:
+        fail(
+            "db writes must target the main repository, not a worktree path",
+            extra={"repo": str(resolved)},
+        )
+
+
 def ensure_clean_worktree_base(repo: Path, base_branch: str):
     current = run_git(["branch", "--show-current"], cwd=repo)
     current_branch = current.stdout.strip()
@@ -528,6 +537,7 @@ def cmd_check_new_commit(args):
 
 def cmd_db_upsert_req(args):
     repo = Path(args.repo)
+    ensure_main_repo_for_db_writes(repo)
     req_file = repo / "occd" / "req" / args.filename
     if not req_file.exists():
         fail(f"requirement file not found: {req_file}")
@@ -563,6 +573,7 @@ def cmd_db_upsert_req(args):
 
 def cmd_db_update_req_status(args):
     repo = Path(args.repo)
+    ensure_main_repo_for_db_writes(repo)
     ensure_status(args.status, REQ_STATUS, "requirement status")
     conn = get_conn(repo)
     row = conn.execute("SELECT status FROM requirements WHERE id=?", (args.req_id,)).fetchone()
@@ -634,6 +645,7 @@ def cmd_req_history(args):
 
 def cmd_db_mark_req_processed(args):
     repo = Path(args.repo)
+    ensure_main_repo_for_db_writes(repo)
     conn = get_conn(repo)
     row = conn.execute("SELECT latest_commit, latest_commit_at, status FROM requirements WHERE id=?", (args.req_id,)).fetchone()
     if not row:
@@ -652,6 +664,7 @@ def cmd_db_mark_req_processed(args):
 
 def cmd_db_block_req(args):
     repo = Path(args.repo)
+    ensure_main_repo_for_db_writes(repo)
     conn = get_conn(repo)
     row = conn.execute("SELECT status FROM requirements WHERE id=?", (args.req_id,)).fetchone()
     if not row:
@@ -668,6 +681,7 @@ def cmd_db_block_req(args):
 
 def cmd_write_review(args):
     repo = Path(args.repo)
+    ensure_main_repo_for_db_writes(repo)
     req_name = args.req
     questions = json.loads(args.questions)
     if not isinstance(questions, list) or not questions:
@@ -745,6 +759,7 @@ def _validate_task_payload(task: dict[str, Any]):
 
 def cmd_write_tasks(args):
     repo = Path(args.repo)
+    ensure_main_repo_for_db_writes(repo)
     req_name = args.req
     tasks = json.loads(args.tasks)
     if not isinstance(tasks, list) or not tasks:
@@ -826,6 +841,7 @@ depends_on: {json.dumps(depends_on, ensure_ascii=False)}
 
 def cmd_db_update_task_status(args):
     repo = Path(args.repo)
+    ensure_main_repo_for_db_writes(repo)
     parse_task_id(args.task)
     ensure_status(args.status, TASK_STATUS, "task status")
     conn = get_conn(repo)
@@ -868,6 +884,7 @@ def cmd_db_list_tasks_by_xxx(args):
 
 def cmd_db_add_report(args):
     repo = Path(args.repo)
+    ensure_main_repo_for_db_writes(repo)
     parse_task_id(args.task)
     ensure_status(args.outcome, OUTCOMES, "outcome")
     started_at = iso_to_ts_ms(args.started_at) or ts_ms()

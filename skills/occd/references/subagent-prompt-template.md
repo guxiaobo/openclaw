@@ -24,8 +24,9 @@
 1. 不要修改 occd/req/ 下任何文件。
 2. 必须先读取 task 任务文件，再开始执行。
 3. 只能通过 scripts/occd_utils.py 更新状态，不要直接操作 occd.db。
-4. 完成后必须写结构化报告到 occd/report/。
-5. worktree / task 分支中的成果，在 merge 回主仓库前，只能描述为“在 worktree/任务分支中完成”，不能写成“主仓库已可见”。
+4. 所有 DB 写入命令中的 `--repo` 必须传主仓库根路径，不能传 worktree 路径；否则会被拒绝。
+5. 完成后必须写结构化报告到 occd/report/。
+6. worktree / task 分支中的成果，在 merge 回主仓库前，只能描述为“在 worktree/任务分支中完成”，不能写成“主仓库已可见”。
 
 执行步骤：
 1. 读取任务文件：
