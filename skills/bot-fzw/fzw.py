@@ -395,6 +395,8 @@ def classify_browser_error(last_error, empty_page=False):
         return "BROWSER_CAPTCHA_502", "浏览器模式下验证码接口返回502"
     if "browser_captcha_bad:400" in text:
         return "BROWSER_CAPTCHA_400", "浏览器模式下验证码接口返回400"
+    if "browser_check_unstable" in text:
+        return "BROWSER_CHECK_UNSTABLE", "浏览器模式下验证码校验接口多次异常"
     if "browser_check_failed" in text:
         return "BROWSER_CAPTCHA_INVALID", "浏览器模式下验证码校验失败"
     if "browser_query_status" in text or "browser_query_json" in text:
@@ -712,7 +714,7 @@ def browser_fetch_captcha(page, captcha_id):
     return page.evaluate(js, {"url": f"{BASE_URL}/captcha.do?captchaId={captcha_id}&random={rand}"})
 
 
-def browser_check_captcha(page, captcha_id, pcode):
+def browser_check_captcha(page, captcha_id, pcode, retries=CHECK_RETRIES):
     js = """
     async ({ baseUrl, captchaId, pcode }) => {
       const url = `${baseUrl}/checkyzm?captchaId=${encodeURIComponent(captchaId)}&pCode=${encodeURIComponent(pcode)}`;
@@ -724,10 +726,25 @@ def browser_check_captcha(page, captcha_id, pcode):
       return { ok: resp.ok, status: resp.status, text };
     }
     """
-    return page.evaluate(js, {"baseUrl": BASE_URL, "captchaId": captcha_id, "pcode": pcode})
+    last = None
+    for attempt in range(1, retries + 1):
+        try:
+            result = page.evaluate(js, {"baseUrl": BASE_URL, "captchaId": captcha_id, "pcode": pcode})
+            text = (result.get("text") or "").strip()
+            ok = result.get("ok") and text == "1"
+            print(f"[浏览器模式] 验证码校验 第{attempt}/{retries}次 status={result.get('status')} raw={text}")
+            if ok:
+                return True, result, True
+            last = result
+        except Exception as e:
+            last = {"error": f"{type(e).__name__}: {e}"}
+            print(f"[浏览器模式] 验证码校验 第{attempt}/{retries}次异常: {e}")
+        if attempt < retries:
+            page.wait_for_timeout(min(RETRY_BACKOFF_BASE ** (attempt - 1), 4) * 1000)
+    return False, last, False
 
 
-def browser_query_page(page, name, card_num, captcha_id, pcode, page_num=1):
+def browser_query_page(page, name, card_num, captcha_id, pcode, page_num=1, retries=QUERY_RETRIES):
     data = {
         "pName": name or "",
         "pCardNum": card_num or "",
@@ -757,7 +774,20 @@ def browser_query_page(page, name, card_num, captcha_id, pcode, page_num=1):
       return { ok: resp.ok, status: resp.status, text };
     }
     """
-    return page.evaluate(js, {"baseUrl": BASE_URL, "data": data})
+    last = None
+    for attempt in range(1, retries + 1):
+        try:
+            result = page.evaluate(js, {"baseUrl": BASE_URL, "data": data})
+            print(f"[浏览器模式] 查询响应 第{attempt}/{retries}次 status={result.get('status')}")
+            if result.get("ok"):
+                return result, True
+            last = result
+        except Exception as e:
+            last = {"error": f"{type(e).__name__}: {e}"}
+            print(f"[浏览器模式] 查询提交 第{attempt}/{retries}次异常: {e}")
+        if attempt < retries:
+            page.wait_for_timeout(min(RETRY_BACKOFF_BASE ** (attempt - 1), 4) * 1000)
+    return last, False
 
 
 def query_fzw_browser(name=None, card_num=None, max_retry=3, fetch_all_pages=True, headless=True):
@@ -826,18 +856,20 @@ def query_fzw_browser(name=None, card_num=None, max_retry=3, fetch_all_pages=Tru
                     last_error = "browser_ocr_failed"
                     continue
 
-                chk = browser_check_captcha(page, captcha_id, text)
-                chk_text = (chk.get("text") or "").strip()
-                chk_ok = chk.get("ok") and chk_text == "1"
-                print(f"[浏览器模式] 验证码校验 status={chk.get('status')} raw={chk_text} | 文件={image_path or '-'}")
+                chk_ok, chk, chk_stable = browser_check_captcha(page, captcha_id, text)
+                chk_text = ((chk or {}).get("text") or "").strip() if isinstance(chk, dict) else ""
+                print(f"[浏览器模式] 验证码校验最终结果 stable={chk_stable} raw={chk_text} | 文件={image_path or '-'}")
+                if not chk_stable:
+                    last_error = f"browser_check_unstable:{chk}"
+                    page.reload(wait_until="domcontentloaded", timeout=60000)
+                    continue
                 if not chk_ok:
-                    last_error = f"browser_check_failed:{chk.get('status')}:{chk_text}"
+                    last_error = f"browser_check_failed:{(chk or {}).get('status')}:{chk_text}"
                     continue
 
-                res = browser_query_page(page, name, card_num, captcha_id, text, page_num=1)
-                print(f"[浏览器模式] 查询响应 status={res.get('status')}")
-                if not res.get("ok"):
-                    last_error = f"browser_query_status:{res.get('status')}"
+                res, query_stable = browser_query_page(page, name, card_num, captcha_id, text, page_num=1)
+                if not query_stable or not res or not res.get("ok"):
+                    last_error = f"browser_query_status:{(res or {}).get('status') if isinstance(res, dict) else res}"
                     page.reload(wait_until="domcontentloaded", timeout=60000)
                     continue
                 try:
