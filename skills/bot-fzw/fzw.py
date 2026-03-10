@@ -17,6 +17,7 @@ import sqlite3
 import json
 import time
 import re
+import base64
 import uuid
 import argparse
 import sys
@@ -32,8 +33,13 @@ try:
     import requests
     import ddddocr
 except ImportError:
-    print("请先安装依赖: cd skills/bot-fzw && venv/bin/pip install requests ddddocr")
+    print("请先安装依赖: cd skills/bot-fzw && venv/bin/pip install -r requirements.txt")
     sys.exit(1)
+
+try:
+    from playwright.sync_api import sync_playwright
+except ImportError:
+    sync_playwright = None
 
 # 数据库路径（与脚本同目录）
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fzw.db")
@@ -82,6 +88,7 @@ QUERY_RETRIES = 3
 RETRY_BACKOFF_BASE = 2
 SAVE_CAPTCHA = False
 CAPTCHA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "captcha-debug")
+BROWSER_CHANNEL = "chrome"
 
 
 class DebugSession(requests.Session):
@@ -597,6 +604,177 @@ def query_page(session, name, card_num, captcha_id, pcode, page=1, retries=QUERY
     return None, 0, 0, False
 
 
+def browser_fetch_captcha(page, captcha_id):
+    rand = str(time.time())
+    js = """
+    async ({ url }) => {
+      const resp = await fetch(url, { credentials: 'include' });
+      const buf = await resp.arrayBuffer();
+      const bytes = Array.from(new Uint8Array(buf));
+      let binary = '';
+      for (const b of bytes) binary += String.fromCharCode(b);
+      return {
+        ok: resp.ok,
+        status: resp.status,
+        contentType: resp.headers.get('content-type') || '',
+        base64: btoa(binary)
+      };
+    }
+    """
+    return page.evaluate(js, {"url": f"{BASE_URL}/captcha.do?captchaId={captcha_id}&random={rand}"})
+
+
+def browser_check_captcha(page, captcha_id, pcode):
+    js = """
+    async ({ baseUrl, captchaId, pcode }) => {
+      const url = `${baseUrl}/checkyzm?captchaId=${encodeURIComponent(captchaId)}&pCode=${encodeURIComponent(pcode)}`;
+      const resp = await fetch(url, {
+        credentials: 'include',
+        headers: { 'X-Requested-With': 'XMLHttpRequest' }
+      });
+      const text = await resp.text();
+      return { ok: resp.ok, status: resp.status, text };
+    }
+    """
+    return page.evaluate(js, {"baseUrl": BASE_URL, "captchaId": captcha_id, "pcode": pcode})
+
+
+def browser_query_page(page, name, card_num, captcha_id, pcode, page_num=1):
+    data = {
+        "pName": name or "",
+        "pCardNum": card_num or "",
+        "pCode": pcode,
+        "captchaId": captcha_id,
+        "selectCourtId": "0",
+        "searchCourtName": "全国法院（包含地方各级法院）",
+        "currentPage": str(page_num),
+        "selectCourtArrange": "1",
+        "pnameNewDel": "",
+        "cardNumNewDel": "",
+        "caseCodeNewDel": "",
+    }
+    js = """
+    async ({ baseUrl, data }) => {
+      const body = new URLSearchParams(data).toString();
+      const resp = await fetch(`${baseUrl}/searchZhcx.do`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+          'X-Requested-With': 'XMLHttpRequest'
+        },
+        body
+      });
+      const text = await resp.text();
+      return { ok: resp.ok, status: resp.status, text };
+    }
+    """
+    return page.evaluate(js, {"baseUrl": BASE_URL, "data": data})
+
+
+def query_fzw_browser(name=None, card_num=None, max_retry=3, fetch_all_pages=True, headless=True):
+    if sync_playwright is None:
+        print("[浏览器模式] 缺少 playwright，请先安装 requirements.txt")
+        return None
+
+    queried_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"\n{'='*60}")
+    print(f"[浏览器查询] 姓名={name or '-'} | 身份证={card_num or '-'} | 时间={queried_at}")
+    print(f"{'='*60}")
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(channel=BROWSER_CHANNEL, headless=headless)
+        context = browser.new_context()
+        page = context.new_page()
+        try:
+            page.goto(f"{BASE_URL}/", wait_until="domcontentloaded", timeout=60000)
+            page.wait_for_timeout(1500)
+            print(f"[浏览器模式] 首页已打开: {page.url}")
+
+            all_results = []
+            query_succeeded = False
+            last_error = None
+
+            for attempt in range(1, max_retry + 1):
+                print(f"\n[浏览器尝试 {attempt}/{max_retry}]")
+                captcha_id = make_captcha_id()
+                try:
+                    cap = browser_fetch_captcha(page, captcha_id)
+                except Exception as e:
+                    last_error = f"browser_captcha_exception:{type(e).__name__}:{e}"
+                    print(f"[浏览器模式] 验证码请求异常: {e}")
+                    page.reload(wait_until="domcontentloaded", timeout=60000)
+                    continue
+
+                if not cap.get("ok") or "image" not in (cap.get("contentType") or ""):
+                    last_error = f"browser_captcha_bad:{cap.get('status')}:{cap.get('contentType')}"
+                    print(f"[浏览器模式] 验证码失败: status={cap.get('status')} type={cap.get('contentType')}")
+                    page.reload(wait_until="domcontentloaded", timeout=60000)
+                    continue
+
+                image_bytes = base64.b64decode(cap["base64"])
+                text = recognize_captcha(image_bytes)
+                image_path = save_captcha_image(image_bytes, captcha_id, attempt, text)
+                print(f"[浏览器模式] 验证码识别={text} | 文件={image_path or '-'}")
+                if not text:
+                    last_error = "browser_ocr_failed"
+                    continue
+
+                chk = browser_check_captcha(page, captcha_id, text)
+                chk_text = (chk.get("text") or "").strip()
+                chk_ok = chk.get("ok") and chk_text == "1"
+                print(f"[浏览器模式] 验证码校验 status={chk.get('status')} raw={chk_text} | 文件={image_path or '-'}")
+                if not chk_ok:
+                    last_error = f"browser_check_failed:{chk.get('status')}:{chk_text}"
+                    continue
+
+                res = browser_query_page(page, name, card_num, captcha_id, text, page_num=1)
+                print(f"[浏览器模式] 查询响应 status={res.get('status')}")
+                if not res.get("ok"):
+                    last_error = f"browser_query_status:{res.get('status')}"
+                    page.reload(wait_until="domcontentloaded", timeout=60000)
+                    continue
+                try:
+                    j = json.loads(res.get("text") or "")
+                except Exception as e:
+                    last_error = f"browser_query_json:{e}"
+                    print(f"[浏览器模式] JSON解析失败: {(res.get('text') or '')[:300]}")
+                    page.reload(wait_until="domcontentloaded", timeout=60000)
+                    continue
+
+                if isinstance(j, list) and len(j) > 0:
+                    result = j[0].get("result", []) or []
+                    total = j[0].get("totalSize", 0)
+                    all_results.extend(result)
+                    query_succeeded = True
+                    print(f"[浏览器模式] 第1页 {len(result)} 条，总量 {total}")
+                    break
+                else:
+                    all_results = []
+                    query_succeeded = True
+                    print("[浏览器模式] 查询成功但无结果")
+                    break
+
+            if not query_succeeded:
+                print(f"[浏览器模式] 失败，最后错误: {last_error or 'unknown'}")
+                return None
+
+            print(f"\n{'='*60}")
+            print(f"[浏览器模式汇总] 共 {len(all_results)} 条结果")
+            for i, r in enumerate(all_results, 1):
+                name_val = r.get("pname") or r.get("iname") or ""
+                card_val = r.get("dePartyCardNum") or r.get("cardNum") or ""
+                court_val = r.get("courtName") or ""
+                code_val = r.get("caseCode") or ""
+                print(f"  [{i}] {name_val} | {card_val} | {court_val} | {code_val}")
+
+            save_records(name, card_num, all_results, queried_at, total_size=len(all_results))
+            return all_results
+        finally:
+            context.close()
+            browser.close()
+
+
 def query_fzw(name=None, card_num=None, max_retry=3, fetch_all_pages=True, proxies=None):
     """
     查询失信被执行人主函数
@@ -799,6 +977,7 @@ def main():
   python3 fzw.py --name 张三 --debug --proxy http://127.0.0.1:7890
   python3 fzw.py --name 张三 --diag-only
   python3 fzw.py --name 张三 --debug --save-captcha
+  python3 fzw.py --card 110101199001011234 --browser --save-captcha
         """
     )
     parser.add_argument("--name", "-n", help="姓名或企业名称")
@@ -812,6 +991,8 @@ def main():
     parser.add_argument("--proxy", help="显式指定代理，例如 http://host:port")
     parser.add_argument("--insecure", action="store_true", help="跳过TLS证书校验（仅用于排障）")
     parser.add_argument("--save-captcha", action="store_true", help="将每次获取到的验证码图片保存到本地，便于排障")
+    parser.add_argument("--browser", action="store_true", help="使用真实浏览器上下文执行查询，尽量贴近人工浏览器链路")
+    parser.add_argument("--headed", action="store_true", help="浏览器模式下显示浏览器窗口")
     args = parser.parse_args()
 
     DEBUG = args.debug
@@ -859,12 +1040,20 @@ def main():
             print("    使用 --force 强制继续查询")
             return
 
-    query_fzw(
-        name=args.name,
-        card_num=args.card,
-        fetch_all_pages=not args.no_paging,
-        proxies=proxies
-    )
+    if args.browser:
+        query_fzw_browser(
+            name=args.name,
+            card_num=args.card,
+            fetch_all_pages=not args.no_paging,
+            headless=not args.headed,
+        )
+    else:
+        query_fzw(
+            name=args.name,
+            card_num=args.card,
+            fetch_all_pages=not args.no_paging,
+            proxies=proxies
+        )
 
 
 if __name__ == "__main__":
