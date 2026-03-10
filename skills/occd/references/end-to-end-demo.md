@@ -10,6 +10,8 @@
 python scripts/occd_e2e_scenarios.py --base-dir ~/tmp/occd-e2e
 ```
 
+该脚本会自动使用独立测试配置文件，不会覆盖默认的 `~/.openclaw/occd-config.json`。
+
 当前脚本覆盖：
 
 - 场景 1：同一 req 文件存在多个未处理 commit，按 commit 区间累计分析

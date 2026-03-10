@@ -53,6 +53,7 @@ def assert_true(cond: bool, msg: str):
 class Runner:
     def __init__(self, base_dir: Path):
         self.base_dir = base_dir
+        self.config_path = self.base_dir / "occd-test-config.json"
         self.results: dict[str, Any] = {}
 
     def create_repo(self, scenario: str, repo_name: str) -> Path:
@@ -76,6 +77,8 @@ class Runner:
     def init_occd(self, work_dir: Path, repo: Path):
         occd_util(
             "config-init",
+            "--config",
+            str(self.config_path),
             "--work-dir",
             str(work_dir),
             "--poll-interval",

@@ -25,7 +25,7 @@ TASK_STATUS = {"pending", "spawned", "running", "done", "failed"}
 OUTCOMES = {"success", "failure", "partial"}
 TASK_TYPES = {"coding", "test-write", "test-run"}
 TASK_ID_RE = re.compile(r"^([a-z0-9][a-z0-9-]*)-(\d+)-(\d+)-(coding|test-write|test-run)$")
-DEFAULT_CONFIG_PATH = Path.home() / ".openclaw" / "occd-config.json"
+DEFAULT_CONFIG_PATH = Path(os.environ.get("OCCD_CONFIG_PATH", Path.home() / ".openclaw" / "occd-config.json")).expanduser()
 LOCK_DIRNAME = ".locks"
 
 DB_SCHEMA = """
