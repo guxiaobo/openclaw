@@ -75,6 +75,11 @@ VERIFY_TLS = True
 REQUIRED_PYTHON = (3, 10)
 CAPTCHA_TIMEOUT = 20
 CAPTCHA_RETRIES = 4
+CHECK_TIMEOUT = 12
+CHECK_RETRIES = 3
+QUERY_TIMEOUT = 30
+QUERY_RETRIES = 3
+RETRY_BACKOFF_BASE = 2
 SAVE_CAPTCHA = False
 CAPTCHA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "captcha-debug")
 
@@ -499,29 +504,40 @@ def get_captcha(session, captcha_id=None, timeout=CAPTCHA_TIMEOUT, retries=CAPTC
     }
 
 
-def check_captcha(session, captcha_id, pcode, image_path=None):
-    """校验验证码是否正确，返回 (ok, raw_result)"""
-    try:
-        resp = session.get(
-            f"{BASE_URL}/checkyzm",
-            params={"captchaId": captcha_id, "pCode": pcode},
-            headers=HEADERS_AJAX,
-            timeout=8
-        )
-        result = resp.json()
-        ok = result == "1" or result == 1
-        print(f"[验证码校验] pcode={pcode} | ok={ok} | raw={result} | 文件={image_path or '-'}")
-        dbg(f"[验证码校验] 返回: {result}")
-        return ok, result
-    except Exception as e:
-        print(f"[验证码校验] 异常: {type(e).__name__}: {e} | pcode={pcode} | 文件={image_path or '-'}")
-        if DEBUG:
-            print(traceback.format_exc())
-        return True, None  # 校验失败时继续尝试查询
+def check_captcha(session, captcha_id, pcode, image_path=None, retries=CHECK_RETRIES, timeout=CHECK_TIMEOUT):
+    """校验验证码是否正确，返回 (ok, raw_result, stable)"""
+    last_error = None
+    for attempt in range(1, retries + 1):
+        try:
+            resp = session.get(
+                f"{BASE_URL}/checkyzm",
+                params={"captchaId": captcha_id, "pCode": pcode},
+                headers=HEADERS_AJAX,
+                timeout=timeout
+            )
+            result = resp.json()
+            ok = result == "1" or result == 1
+            print(
+                f"[验证码校验] 第{attempt}/{retries}次 pcode={pcode} | ok={ok} | raw={result} | 文件={image_path or '-'}"
+            )
+            dbg(f"[验证码校验] 返回: {result}")
+            return ok, result, True
+        except Exception as e:
+            last_error = f"{type(e).__name__}: {e}"
+            print(
+                f"[验证码校验] 第{attempt}/{retries}次异常: {type(e).__name__}: {e} | "
+                f"pcode={pcode} | 文件={image_path or '-'}"
+            )
+            if DEBUG:
+                print(traceback.format_exc())
+            if attempt < retries:
+                time.sleep(min(RETRY_BACKOFF_BASE ** (attempt - 1), 4))
+
+    return False, last_error, False
 
 
-def query_page(session, name, card_num, captcha_id, pcode, page=1):
-    """查询一页结果"""
+def query_page(session, name, card_num, captcha_id, pcode, page=1, retries=QUERY_RETRIES, timeout=QUERY_TIMEOUT):
+    """查询一页结果；返回 (result, total, current_page, stable)"""
     data = {
         "pName": name or "",
         "pCardNum": card_num or "",
@@ -535,36 +551,50 @@ def query_page(session, name, card_num, captcha_id, pcode, page=1):
         "cardNumNewDel": "",
         "caseCodeNewDel": "",
     }
-    try:
-        resp = session.post(
-            f"{BASE_URL}/searchZhcx.do",
-            data=data,
-            headers=HEADERS_AJAX,
-            timeout=20
-        )
-    except Exception as e:
-        print(f"[查询] 请求异常: {type(e).__name__}: {e}")
-        if DEBUG:
-            print(traceback.format_exc())
-        return None, 0, 0
+    last_error = None
 
-    print(f"[查询] status={resp.status_code}, len={len(resp.text)}")
-    if resp.status_code != 200:
-        print(f"[查询] 非200响应: headers={dict(resp.headers)}")
-        return None, 0, 0
-    try:
-        j = resp.json()
-        if DEBUG:
-            print(f"[查询] JSON前500字符: {json.dumps(j, ensure_ascii=False, default=str)[:500]}")
-        if isinstance(j, list) and len(j) > 0:
-            result = j[0].get("result", []) or []
-            total = j[0].get("totalSize", 0)
-            cur_page = j[0].get("currentPage", page)
-            return result, total, cur_page
-        return [], 0, page
-    except Exception as e:
-        print(f"[查询] JSON解析失败: {e}, 内容: {resp.text[:300]}")
-        return None, 0, 0
+    for attempt in range(1, retries + 1):
+        try:
+            resp = session.post(
+                f"{BASE_URL}/searchZhcx.do",
+                data=data,
+                headers=HEADERS_AJAX,
+                timeout=timeout
+            )
+        except Exception as e:
+            last_error = f"{type(e).__name__}: {e}"
+            print(f"[查询] 第{attempt}/{retries}次请求异常: {type(e).__name__}: {e}")
+            if DEBUG:
+                print(traceback.format_exc())
+            if attempt < retries:
+                time.sleep(min(RETRY_BACKOFF_BASE ** (attempt - 1), 4))
+            continue
+
+        print(f"[查询] 第{attempt}/{retries}次 status={resp.status_code}, len={len(resp.text)}")
+        if resp.status_code != 200:
+            last_error = f"status_{resp.status_code}"
+            print(f"[查询] 非200响应: headers={dict(resp.headers)}")
+            if attempt < retries:
+                time.sleep(min(RETRY_BACKOFF_BASE ** (attempt - 1), 4))
+            continue
+        try:
+            j = resp.json()
+            if DEBUG:
+                print(f"[查询] JSON前500字符: {json.dumps(j, ensure_ascii=False, default=str)[:500]}")
+            if isinstance(j, list) and len(j) > 0:
+                result = j[0].get("result", []) or []
+                total = j[0].get("totalSize", 0)
+                cur_page = j[0].get("currentPage", page)
+                return result, total, cur_page, True
+            return [], 0, page, True
+        except Exception as e:
+            last_error = f"json_error:{e}"
+            print(f"[查询] JSON解析失败: {e}, 内容: {resp.text[:300]}")
+            if attempt < retries:
+                time.sleep(min(RETRY_BACKOFF_BASE ** (attempt - 1), 4))
+
+    print(f"[查询] 多次重试后仍失败: {last_error or 'unknown'}")
+    return None, 0, 0, False
 
 
 def query_fzw(name=None, card_num=None, max_retry=3, fetch_all_pages=True, proxies=None):
@@ -607,7 +637,14 @@ def query_fzw(name=None, card_num=None, max_retry=3, fetch_all_pages=True, proxi
             continue
 
         # 可选：先校验验证码
-        ok, raw_check = check_captcha(session, captcha_id, pcode, image_path=image_path)
+        ok, raw_check, check_stable = check_captcha(session, captcha_id, pcode, image_path=image_path)
+        if not check_stable:
+            last_error = f"captcha_check_unstable:{pcode}:{raw_check}"
+            print(f"[!] 验证码校验接口不稳定 | 文件={image_path or '-'}，重建 session 后重试整轮...")
+            session, html, init_cid = init_session(proxies=proxies)
+            if session is None:
+                break
+            continue
         if not ok:
             last_error = f"captcha_check_failed:{pcode}:{raw_check}"
             print(f"[!] 验证码 '{pcode}' 校验不通过 | 文件={image_path or '-'}，重新获取...")
@@ -617,11 +654,14 @@ def query_fzw(name=None, card_num=None, max_retry=3, fetch_all_pages=True, proxi
         print(f"[✓] 验证码 '{pcode}' 校验通过 | 文件={image_path or '-'}")
 
         # 查询第一页
-        results, total, cur_page = query_page(session, name, card_num, captcha_id, pcode, page=1)
+        results, total, cur_page, query_stable = query_page(session, name, card_num, captcha_id, pcode, page=1)
 
         if results is None:
             last_error = "query_page_failed"
-            print("[!] 查询请求失败，重新初始化 session...")
+            if not query_stable:
+                print("[!] 查询接口多次重试后仍失败，重新初始化 session...")
+            else:
+                print("[!] 查询请求失败，重新初始化 session...")
             session, html, init_cid = init_session(proxies=proxies)
             if session is None:
                 break
@@ -647,9 +687,12 @@ def query_fzw(name=None, card_num=None, max_retry=3, fetch_all_pages=True, proxi
                 if not ok2 or not pcode2:
                     print(f"[!] 第{page}页验证码失败（{reason2}） | 文件={image2 or '-'}，停止翻页")
                     break
-                more, _, _ = query_page(session, name, card_num, cid2, pcode2, page=page)
+                more, _, _, page_stable = query_page(session, name, card_num, cid2, pcode2, page=page)
                 if more is None:
-                    print(f"[!] 第{page}页查询失败，停止翻页")
+                    if not page_stable:
+                        print(f"[!] 第{page}页查询多次重试后仍失败，停止翻页")
+                    else:
+                        print(f"[!] 第{page}页查询失败，停止翻页")
                     break
                 if len(more) == 0:
                     break
