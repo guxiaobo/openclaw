@@ -440,12 +440,16 @@ def init_session(max_try=3, proxies=None):
 
 
 def get_captcha(session, captcha_id=None, timeout=CAPTCHA_TIMEOUT, retries=CAPTCHA_RETRIES):
-    """获取并识别验证码；返回 (captcha_id, text, ok, reason)"""
+    """获取并识别验证码；返回详细信息字典"""
     last_reason = "unknown"
+    last_path = None
+    last_text = None
+    last_id = captcha_id
 
     for attempt in range(1, retries + 1):
         if captcha_id is None:
             captcha_id = make_captcha_id()
+        last_id = captcha_id
         rand = str(time.time())
         url = f"{BASE_URL}/captcha.do?captchaId={captcha_id}&random={rand}"
         try:
@@ -457,10 +461,19 @@ def get_captcha(session, captcha_id=None, timeout=CAPTCHA_TIMEOUT, retries=CAPTC
             content_type = resp.headers.get("content-type", "")
             if resp.status_code == 200 and "image" in content_type and len(resp.content) > 200:
                 text = recognize_captcha(resp.content)
-                save_captcha_image(resp.content, captcha_id, attempt, text)
-                print(f"[验证码] 第{attempt}/{retries}次 ID={captcha_id[:8]}... 识别={text}")
+                path = save_captcha_image(resp.content, captcha_id, attempt, text)
+                last_path = path
+                last_text = text
+                print(f"[验证码] 第{attempt}/{retries}次 ID={captcha_id[:8]}... 识别={text} | 文件={path or '-'}")
                 if text:
-                    return captcha_id, text, True, "ok"
+                    return {
+                        "captcha_id": captcha_id,
+                        "text": text,
+                        "ok": True,
+                        "reason": "ok",
+                        "attempt": attempt,
+                        "image_path": path,
+                    }
                 last_reason = "ocr_failed"
                 time.sleep(min(attempt, 2))
             else:
@@ -476,11 +489,18 @@ def get_captcha(session, captcha_id=None, timeout=CAPTCHA_TIMEOUT, retries=CAPTC
 
         captcha_id = make_captcha_id()
 
-    return captcha_id, None, False, last_reason
+    return {
+        "captcha_id": last_id,
+        "text": last_text,
+        "ok": False,
+        "reason": last_reason,
+        "attempt": retries,
+        "image_path": last_path,
+    }
 
 
-def check_captcha(session, captcha_id, pcode):
-    """校验验证码是否正确，返回 True/False"""
+def check_captcha(session, captcha_id, pcode, image_path=None):
+    """校验验证码是否正确，返回 (ok, raw_result)"""
     try:
         resp = session.get(
             f"{BASE_URL}/checkyzm",
@@ -489,13 +509,15 @@ def check_captcha(session, captcha_id, pcode):
             timeout=8
         )
         result = resp.json()
+        ok = result == "1" or result == 1
+        print(f"[验证码校验] pcode={pcode} | ok={ok} | raw={result} | 文件={image_path or '-'}")
         dbg(f"[验证码校验] 返回: {result}")
-        return result == "1" or result == 1
+        return ok, result
     except Exception as e:
-        print(f"[验证码校验] 异常: {type(e).__name__}: {e}")
+        print(f"[验证码校验] 异常: {type(e).__name__}: {e} | pcode={pcode} | 文件={image_path or '-'}")
         if DEBUG:
             print(traceback.format_exc())
-        return True  # 校验失败时继续尝试查询
+        return True, None  # 校验失败时继续尝试查询
 
 
 def query_page(session, name, card_num, captcha_id, pcode, page=1):
@@ -568,12 +590,16 @@ def query_fzw(name=None, card_num=None, max_retry=3, fetch_all_pages=True, proxi
         print(f"\n[尝试 {attempt}/{max_retry}]")
 
         # 获取验证码（每次重新生成 ID）
-        captcha_id = make_captcha_id()
-        captcha_id, pcode, captcha_ok, captcha_reason = get_captcha(session, captcha_id)
+        captcha_info = get_captcha(session, make_captcha_id())
+        captcha_id = captcha_info["captcha_id"]
+        pcode = captcha_info["text"]
+        captcha_ok = captcha_info["ok"]
+        captcha_reason = captcha_info["reason"]
+        image_path = captcha_info.get("image_path")
 
         if not captcha_ok or not pcode:
             last_error = f"captcha_failed:{captcha_reason}"
-            print(f"[!] 验证码获取/识别失败：{captcha_reason}，重试...")
+            print(f"[!] 验证码获取/识别失败：{captcha_reason} | 文件={image_path or '-'}，重试...")
             session, html, init_cid = init_session(proxies=proxies)
             if session is None:
                 break
@@ -581,14 +607,14 @@ def query_fzw(name=None, card_num=None, max_retry=3, fetch_all_pages=True, proxi
             continue
 
         # 可选：先校验验证码
-        ok = check_captcha(session, captcha_id, pcode)
+        ok, raw_check = check_captcha(session, captcha_id, pcode, image_path=image_path)
         if not ok:
-            last_error = f"captcha_check_failed:{pcode}"
-            print(f"[!] 验证码 '{pcode}' 校验不通过，重新获取...")
+            last_error = f"captcha_check_failed:{pcode}:{raw_check}"
+            print(f"[!] 验证码 '{pcode}' 校验不通过 | 文件={image_path or '-'}，重新获取...")
             time.sleep(0.5)
             continue
 
-        print(f"[✓] 验证码 '{pcode}' 校验通过")
+        print(f"[✓] 验证码 '{pcode}' 校验通过 | 文件={image_path or '-'}")
 
         # 查询第一页
         results, total, cur_page = query_page(session, name, card_num, captcha_id, pcode, page=1)
@@ -612,9 +638,14 @@ def query_fzw(name=None, card_num=None, max_retry=3, fetch_all_pages=True, proxi
                 print(f"[翻页] 获取第 {page}/{total_pages} 页...")
                 time.sleep(0.5)
                 # 翻页需要新验证码
-                cid2, pcode2, ok2, reason2 = get_captcha(session, make_captcha_id())
+                page_captcha = get_captcha(session, make_captcha_id())
+                cid2 = page_captcha["captcha_id"]
+                pcode2 = page_captcha["text"]
+                ok2 = page_captcha["ok"]
+                reason2 = page_captcha["reason"]
+                image2 = page_captcha.get("image_path")
                 if not ok2 or not pcode2:
-                    print(f"[!] 第{page}页验证码失败（{reason2}），停止翻页")
+                    print(f"[!] 第{page}页验证码失败（{reason2}） | 文件={image2 or '-'}，停止翻页")
                     break
                 more, _, _ = query_page(session, name, card_num, cid2, pcode2, page=page)
                 if more is None:

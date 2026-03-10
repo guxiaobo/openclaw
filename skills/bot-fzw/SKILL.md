@@ -68,7 +68,7 @@ venv/bin/python3 fzw.py --card 110101199001011234 --debug --save-captcha
 
 - **验证码识别**：ddddocr 本地识别，建议 Python 3.10 + `ddddocr==1.0.6` + `Pillow<10`
 - **重试策略**：验证码请求与识别会自动重试，多次失败时终止查询，不再误写“无结果”
-- **排障增强**：支持 `--save-captcha` 将验证码图片落盘到 `captcha-debug/`，方便人工核对 OCR 质量
+- **排障增强**：支持 `--save-captcha` 将验证码图片落盘到 `captcha-debug/`，并在日志中关联输出图片路径、OCR结果、验证码校验结果
 - **反爬处理**：完整模拟浏览器 headers，维护 WAF session cookie
 - **接口**：
   - 主页：`GET /zhzxgk/`（获取 WAF cookie + JSESSIONID）
