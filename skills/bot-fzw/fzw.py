@@ -336,6 +336,65 @@ def init_db():
     print(f"[DB] 数据库: {DB_PATH}")
 
 
+def build_result_payload(ok, mode, status, message, results=None, total=0, queried_at=None, extra=None):
+    return {
+        "ok": ok,
+        "mode": mode,
+        "status": status,
+        "message": message,
+        "total": total,
+        "queried_at": queried_at,
+        "results": results or [],
+        "extra": extra or {},
+    }
+
+
+def print_result_payload(payload):
+    summary = {
+        "ok": payload.get("ok"),
+        "mode": payload.get("mode"),
+        "status": payload.get("status"),
+        "message": payload.get("message"),
+        "total": payload.get("total"),
+        "queried_at": payload.get("queried_at"),
+    }
+    if payload.get("extra"):
+        summary["extra"] = payload.get("extra")
+    print(f"[RESULT] {json.dumps(summary, ensure_ascii=False)}")
+
+
+def classify_requests_error(last_error):
+    text = last_error or "unknown"
+    if "captcha_failed:bad_response:502" in text:
+        return "WAF_BLOCKED", "验证码接口返回502，疑似被WAF/出口链路拦截"
+    if "captcha_failed:ReadTimeout" in text or "captcha_failed:ConnectionError" in text:
+        return "CAPTCHA_FETCH_TIMEOUT", "验证码接口超时或连接失败"
+    if "captcha_check_unstable" in text:
+        return "CAPTCHA_CHECK_UNSTABLE", "验证码校验接口多次异常"
+    if "captcha_check_failed" in text:
+        return "CAPTCHA_INVALID", "验证码识别或校验失败"
+    if "query_page_failed" in text:
+        return "QUERY_SUBMIT_TIMEOUT", "查询提交多次失败或超时"
+    if "session_init_failed" in text:
+        return "SESSION_INIT_FAILED", "首页会话初始化失败"
+    return "REQUESTS_FAILED", text
+
+
+def classify_browser_error(last_error, empty_page=False):
+    text = last_error or "unknown"
+    if empty_page:
+        return "EMPTY_BROWSER_PAGE", "浏览器拿到空页面或仅空壳HTML"
+    if "browser_captcha_bad:502" in text:
+        return "BROWSER_CAPTCHA_502", "浏览器模式下验证码接口返回502"
+    if "browser_captcha_bad:400" in text:
+        return "BROWSER_CAPTCHA_400", "浏览器模式下验证码接口返回400"
+    if "browser_check_failed" in text:
+        return "BROWSER_CAPTCHA_INVALID", "浏览器模式下验证码校验失败"
+    if "browser_query_status" in text or "browser_query_json" in text:
+        return "BROWSER_QUERY_FAILED", "浏览器模式下查询提交失败"
+    return "BROWSER_FAILED", text
+
+
 def save_records(query_name, query_card, results, queried_at, total_size=0):
     """将查询结果存入数据库，每次查询都是新记录"""
     conn = sqlite3.connect(DB_PATH)
@@ -696,8 +755,10 @@ def browser_query_page(page, name, card_num, captcha_id, pcode, page_num=1):
 
 def query_fzw_browser(name=None, card_num=None, max_retry=3, fetch_all_pages=True, headless=True):
     if sync_playwright is None:
+        payload = build_result_payload(False, "browser", "BROWSER_RUNTIME_MISSING", "缺少 playwright 依赖")
+        print_result_payload(payload)
         print("[浏览器模式] 缺少 playwright，请先安装 requirements.txt")
-        return None
+        return payload
 
     queried_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"\n{'='*60}")
@@ -720,7 +781,9 @@ def query_fzw_browser(name=None, card_num=None, max_retry=3, fetch_all_pages=Tru
             page.wait_for_timeout(1500)
             print(f"[浏览器模式] 首页已打开: {page.url}")
             content = page.content().strip()
+            empty_page = False
             if content in ('<html><head></head><body></body></html>', '<html><head></head><body></body></html\n') or len(content) < 80:
+                empty_page = True
                 print(f"[浏览器模式] 页面内容异常偏空，最近网络响应: {netlog[-8:]}")
                 save_browser_debug(page, 'empty_page')
 
@@ -792,8 +855,18 @@ def query_fzw_browser(name=None, card_num=None, max_retry=3, fetch_all_pages=Tru
                     break
 
             if not query_succeeded:
+                status, message = classify_browser_error(last_error, empty_page=empty_page)
+                payload = build_result_payload(
+                    False,
+                    "browser",
+                    status,
+                    message,
+                    queried_at=queried_at,
+                    extra={"last_error": last_error, "empty_page": empty_page}
+                )
                 print(f"[浏览器模式] 失败，最后错误: {last_error or 'unknown'}")
-                return None
+                print_result_payload(payload)
+                return payload
 
             print(f"\n{'='*60}")
             print(f"[浏览器模式汇总] 共 {len(all_results)} 条结果")
@@ -805,7 +878,17 @@ def query_fzw_browser(name=None, card_num=None, max_retry=3, fetch_all_pages=Tru
                 print(f"  [{i}] {name_val} | {card_val} | {court_val} | {code_val}")
 
             save_records(name, card_num, all_results, queried_at, total_size=len(all_results))
-            return all_results
+            payload = build_result_payload(
+                True,
+                "browser",
+                "OK",
+                "查询成功",
+                results=all_results,
+                total=len(all_results),
+                queried_at=queried_at,
+            )
+            print_result_payload(payload)
+            return payload
         finally:
             context.close()
             browser.close()
@@ -823,8 +906,10 @@ def query_fzw(name=None, card_num=None, max_retry=3, fetch_all_pages=True, proxi
     # 初始化 session
     session, html, init_cid = init_session(proxies=proxies)
     if session is None:
+        payload = build_result_payload(False, "requests", "SESSION_INIT_FAILED", "首页会话初始化失败", queried_at=queried_at)
         print("[!] Session 初始化失败，无法查询")
-        return None
+        print_result_payload(payload)
+        return payload
 
     all_results = []
     query_succeeded = False
@@ -916,9 +1001,19 @@ def query_fzw(name=None, card_num=None, max_retry=3, fetch_all_pages=True, proxi
         break
 
     if not query_succeeded:
+        status, message = classify_requests_error(last_error)
+        payload = build_result_payload(
+            False,
+            "requests",
+            status,
+            message,
+            queried_at=queried_at,
+            extra={"last_error": last_error}
+        )
         print(f"[失败] 本次查询未成功完成，最后错误: {last_error or 'unknown'}")
         print("[失败] 不写入“无结果”记录，避免把网络/验证码失败误判为查无结果。")
-        return None
+        print_result_payload(payload)
+        return payload
 
     # 打印结果摘要
     print(f"\n{'='*60}")
@@ -931,7 +1026,17 @@ def query_fzw(name=None, card_num=None, max_retry=3, fetch_all_pages=True, proxi
         print(f"  [{i}] {name_val} | {card_val} | {court_val} | {code_val}")
 
     save_records(name, card_num, all_results, queried_at, total_size=len(all_results))
-    return all_results
+    payload = build_result_payload(
+        True,
+        "requests",
+        "OK",
+        "查询成功",
+        results=all_results,
+        total=len(all_results),
+        queried_at=queried_at,
+    )
+    print_result_payload(payload)
+    return payload
 
 
 def show_db_records(limit=20):
