@@ -404,6 +404,39 @@ def classify_browser_error(last_error, empty_page=False):
     return "BROWSER_FAILED", text
 
 
+def should_fallback_to_browser(payload):
+    if not payload or payload.get("ok"):
+        return False
+    return payload.get("status") in {
+        "SESSION_INIT_FAILED",
+        "WAF_BLOCKED",
+        "CAPTCHA_FETCH_TIMEOUT",
+        "QUERY_SUBMIT_TIMEOUT",
+        "REQUESTS_FAILED",
+    }
+
+
+def build_fallback_payload(primary_payload, fallback_payload):
+    used_fallback = bool(fallback_payload)
+    final_payload = fallback_payload if (fallback_payload and fallback_payload.get("ok")) else (fallback_payload or primary_payload)
+    merged = dict(final_payload)
+    extra = dict(merged.get("extra") or {})
+    extra["primary"] = {
+        "mode": primary_payload.get("mode"),
+        "status": primary_payload.get("status"),
+        "message": primary_payload.get("message"),
+    }
+    if fallback_payload:
+        extra["fallback"] = {
+            "mode": fallback_payload.get("mode"),
+            "status": fallback_payload.get("status"),
+            "message": fallback_payload.get("message"),
+        }
+    extra["used_fallback"] = used_fallback
+    merged["extra"] = extra
+    return merged
+
+
 def save_records(query_name, query_card, results, queried_at, total_size=0):
     """将查询结果存入数据库，每次查询都是新记录"""
     conn = sqlite3.connect(DB_PATH)
@@ -1159,6 +1192,7 @@ def main():
   python3 fzw.py --name 张三 --debug --save-captcha
   python3 fzw.py --card 110101199001011234 --browser --save-captcha
   python3 fzw.py --card 110101199001011234 --result-json
+  python3 fzw.py --card 110101199001011234 --auto-fallback
         """
     )
     parser.add_argument("--name", "-n", help="姓名或企业名称")
@@ -1175,6 +1209,7 @@ def main():
     parser.add_argument("--browser", action="store_true", help="使用真实浏览器上下文执行查询，尽量贴近人工浏览器链路")
     parser.add_argument("--headed", action="store_true", help="浏览器模式下显示浏览器窗口")
     parser.add_argument("--result-json", action="store_true", help="仅输出纯 JSON 结果摘要，便于外层脚本直接解析")
+    parser.add_argument("--auto-fallback", action="store_true", help="先走 requests，遇到典型链路/WAF失败时自动切到 browser 再试一次")
     args = parser.parse_args()
 
     DEBUG = args.debug
@@ -1230,6 +1265,25 @@ def main():
             fetch_all_pages=not args.no_paging,
             headless=not args.headed,
         )
+    elif args.auto_fallback:
+        primary = query_fzw(
+            name=args.name,
+            card_num=args.card,
+            fetch_all_pages=not args.no_paging,
+            proxies=proxies
+        )
+        if should_fallback_to_browser(primary):
+            print(f"[Fallback] requests 模式失败（{primary.get('status')}），自动切换 browser 模式重试一次...")
+            fallback = query_fzw_browser(
+                name=args.name,
+                card_num=args.card,
+                fetch_all_pages=not args.no_paging,
+                headless=not args.headed,
+            )
+            merged = build_fallback_payload(primary, fallback)
+            print_result_payload(merged)
+        else:
+            print("[Fallback] requests 模式无需切换 browser。")
     else:
         query_fzw(
             name=args.name,
