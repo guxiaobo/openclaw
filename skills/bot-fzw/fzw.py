@@ -21,7 +21,12 @@ import uuid
 import argparse
 import sys
 import os
+import socket
+import ssl
+import platform
+import traceback
 from datetime import datetime
+from urllib.parse import urlparse
 
 try:
     import requests
@@ -65,16 +70,172 @@ HEADERS_AJAX = {
     "Sec-Fetch-Site": "same-origin",
 }
 
+DEBUG = False
+VERIFY_TLS = True
 
-def check_network():
+
+class DebugSession(requests.Session):
+    """带详细请求/响应日志的 Session"""
+
+    def __init__(self, debug=False):
+        super().__init__()
+        self.debug = debug
+
+    def request(self, method, url, **kwargs):
+        start = time.time()
+        debug = getattr(self, "debug", False)
+        if debug:
+            print(f"[HTTP] -> {method.upper()} {url}")
+            if kwargs.get("params"):
+                print(f"[HTTP]    params={json.dumps(kwargs['params'], ensure_ascii=False, default=str)}")
+            if kwargs.get("data"):
+                data = kwargs["data"]
+                if isinstance(data, dict):
+                    print(f"[HTTP]    data={json.dumps(data, ensure_ascii=False, default=str)}")
+                else:
+                    print(f"[HTTP]    data={str(data)[:500]}")
+            headers = kwargs.get("headers") or {}
+            if headers:
+                masked = dict(headers)
+                print(f"[HTTP]    headers={json.dumps(masked, ensure_ascii=False, default=str)}")
+            print(f"[HTTP]    timeout={kwargs.get('timeout')}, allow_redirects={kwargs.get('allow_redirects', True)}")
+
+        try:
+            resp = super().request(method, url, **kwargs)
+            cost_ms = int((time.time() - start) * 1000)
+            if debug:
+                print(f"[HTTP] <- {resp.status_code} {resp.reason} ({cost_ms} ms)")
+                print(f"[HTTP]    final_url={resp.url}")
+                print(f"[HTTP]    content-type={resp.headers.get('content-type', '')}")
+                print(f"[HTTP]    content-length={resp.headers.get('content-length', '')}")
+                print(f"[HTTP]    set-cookie={resp.headers.get('set-cookie', '')[:500]}")
+                body_preview = ""
+                try:
+                    if "image" not in resp.headers.get("content-type", ""):
+                        body_preview = resp.text[:500].replace("\n", " ")
+                except Exception:
+                    body_preview = "<unavailable>"
+                if body_preview:
+                    print(f"[HTTP]    body[:500]={body_preview}")
+            return resp
+        except Exception as e:
+            cost_ms = int((time.time() - start) * 1000)
+            if debug:
+                print(f"[HTTP] !! {type(e).__name__}: {e} ({cost_ms} ms)")
+                print(f"[HTTP]    traceback:\n{traceback.format_exc()}")
+            raise
+
+
+def dbg(msg):
+    if DEBUG:
+        print(msg)
+
+
+def mask_proxy(url):
+    if not url:
+        return url
+    return re.sub(r"://([^:@/]+):([^@/]+)@", r"://\1:***@", url)
+
+
+def summarize_proxies(proxies):
+    if not proxies:
+        return {}
+    return {k: mask_proxy(v) for k, v in proxies.items()}
+
+
+def describe_environment():
+    print("[诊断] 运行环境")
+    print(f"  Python: {sys.version.split()[0]}")
+    print(f"  requests: {getattr(requests, '__version__', 'unknown')}")
+    print(f"  平台: {platform.platform()}")
+    print(f"  OpenSSL: {ssl.OPENSSL_VERSION}")
+    print(f"  SSL_CERT_FILE: {os.environ.get('SSL_CERT_FILE', '') or '-'}")
+    print(f"  REQUESTS_CA_BUNDLE: {os.environ.get('REQUESTS_CA_BUNDLE', '') or '-'}")
+    env_proxy = {
+        "HTTP_PROXY": os.environ.get("HTTP_PROXY") or os.environ.get("http_proxy"),
+        "HTTPS_PROXY": os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy"),
+        "ALL_PROXY": os.environ.get("ALL_PROXY") or os.environ.get("all_proxy"),
+        "NO_PROXY": os.environ.get("NO_PROXY") or os.environ.get("no_proxy"),
+    }
+    print(f"  环境代理: {json.dumps(summarize_proxies(env_proxy), ensure_ascii=False)}")
+    print("  提示: 浏览器常能自动使用系统代理/PAC，但 requests 通常只识别环境变量代理，不会自动读取 macOS 系统代理。")
+
+
+def dns_lookup(hostname):
+    try:
+        infos = socket.getaddrinfo(hostname, 443, proto=socket.IPPROTO_TCP)
+        ips = []
+        for item in infos:
+            ip = item[4][0]
+            if ip not in ips:
+                ips.append(ip)
+        return ips
+    except Exception as e:
+        return [f"DNS解析失败: {e}"]
+
+
+def tls_probe(hostname, port=443, timeout=10):
+    start = time.time()
+    try:
+        ctx = ssl.create_default_context()
+        with socket.create_connection((hostname, port), timeout=timeout) as sock:
+            with ctx.wrap_socket(sock, server_hostname=hostname) as ssock:
+                cert = ssock.getpeercert()
+                cipher = ssock.cipher()
+                version = ssock.version()
+                subject = cert.get("subject", [])
+                issuer = cert.get("issuer", [])
+                cost_ms = int((time.time() - start) * 1000)
+                return {
+                    "ok": True,
+                    "ms": cost_ms,
+                    "tls_version": version,
+                    "cipher": cipher[0] if cipher else "",
+                    "subject": str(subject)[:300],
+                    "issuer": str(issuer)[:300],
+                }
+    except Exception as e:
+        cost_ms = int((time.time() - start) * 1000)
+        return {
+            "ok": False,
+            "ms": cost_ms,
+            "error": f"{type(e).__name__}: {e}",
+        }
+
+
+def create_session(debug=False, proxies=None, verify=True):
+    session = DebugSession(debug=debug)
+    session.headers.update({"Accept-Encoding": "gzip, deflate, br"})
+    session.verify = verify
+    if proxies:
+        session.proxies.update(proxies)
+        session.trust_env = False
+    else:
+        session.trust_env = True
+    return session
+
+
+def print_session_info(session, label="Session"):
+    print(f"[{label}] trust_env={session.trust_env}, verify_tls={getattr(session, 'verify', True)}")
+    if session.proxies:
+        print(f"[{label}] 显式代理: {json.dumps(summarize_proxies(session.proxies), ensure_ascii=False)}")
+    else:
+        print(f"[{label}] 显式代理: -")
+    if session.cookies:
+        cookie_names = sorted({c.name for c in session.cookies})
+        print(f"[{label}] 当前Cookies: {cookie_names}")
+
+
+def check_network(session=None):
     """检测出口IP及网络可达性，返回 (出口IP, 是否大陆IP, 法执网是否可达)"""
     out_ip = "未知"
     is_mainland = False
     site_ok = False
+    sess = session or create_session(debug=DEBUG, verify=VERIFY_TLS)
 
     # 检测出口IP（用 ip-api.com，支持中文地区信息）
     try:
-        r = requests.get(
+        r = sess.get(
             "http://ip-api.com/json?fields=query,country,countryCode,regionName,city,isp",
             timeout=8, headers={"User-Agent": "curl/7.64.1"}
         )
@@ -87,18 +248,18 @@ def check_network():
         is_mainland = country_code == "CN"
         if out_ip != "未知":
             print(f"  出口IP详情: {out_ip} | {country} {city} | {isp}")
-    except Exception as e:
+    except Exception:
         # 备用：ipify
         try:
-            out_ip = requests.get("https://api.ipify.org", timeout=5).text.strip()
+            out_ip = sess.get("https://api.ipify.org", timeout=5).text.strip()
         except Exception:
             pass
         print(f"  IP检测备用: {out_ip} (无法获取地区信息)")
 
     # 检测法执网是否可达
     try:
-        r3 = requests.get(
-            "https://zxgk.court.gov.cn/zhzxgk/",
+        r3 = sess.get(
+            f"{BASE_URL}/",
             timeout=12,
             headers={
                 "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -212,10 +373,11 @@ def recognize_captcha(image_bytes):
         return None
 
 
-def init_session(max_try=3):
+def init_session(max_try=3, proxies=None):
     """初始化 session，获取 WAF cookie 和 JSESSIONID"""
     for i in range(max_try):
-        session = requests.Session()
+        session = create_session(debug=DEBUG, proxies=proxies, verify=VERIFY_TLS)
+        print_session_info(session, f"Session#{i+1}")
         try:
             resp = session.get(
                 f"{BASE_URL}/",
@@ -228,12 +390,16 @@ def init_session(max_try=3):
                 # 从 HTML 中提取初始 captchaId
                 m = re.search(r'captchaId.*?value=["\']([a-f0-9\-]+)["\']', resp.text)
                 init_captcha_id = m.group(1).replace("-", "") if m else None
+                if DEBUG:
+                    print_session_info(session, f"Session#{i+1}-after-init")
                 return session, resp.text, init_captcha_id
             else:
                 print(f"[Session] 第{i+1}次失败: status={resp.status_code}, len={len(resp.text)}, 等待重试...")
                 time.sleep(5)
         except Exception as e:
-            print(f"[Session] 第{i+1}次异常: {e}，等待重试...")
+            print(f"[Session] 第{i+1}次异常: {type(e).__name__}: {e}，等待重试...")
+            if DEBUG:
+                print(traceback.format_exc())
             time.sleep(5)
     return None, None, None
 
@@ -259,7 +425,9 @@ def get_captcha(session, captcha_id=None):
             print(f"[验证码] 获取失败: status={resp.status_code}, type={content_type}, len={len(resp.content)}")
             return captcha_id, None
     except Exception as e:
-        print(f"[验证码] 请求异常: {e}")
+        print(f"[验证码] 请求异常: {type(e).__name__}: {e}")
+        if DEBUG:
+            print(traceback.format_exc())
         return captcha_id, None
 
 
@@ -273,9 +441,12 @@ def check_captcha(session, captcha_id, pcode):
             timeout=8
         )
         result = resp.json()
+        dbg(f"[验证码校验] 返回: {result}")
         return result == "1" or result == 1
     except Exception as e:
-        print(f"[验证码校验] 异常: {e}")
+        print(f"[验证码校验] 异常: {type(e).__name__}: {e}")
+        if DEBUG:
+            print(traceback.format_exc())
         return True  # 校验失败时继续尝试查询
 
 
@@ -294,17 +465,27 @@ def query_page(session, name, card_num, captcha_id, pcode, page=1):
         "cardNumNewDel": "",
         "caseCodeNewDel": "",
     }
-    resp = session.post(
-        f"{BASE_URL}/searchZhcx.do",
-        data=data,
-        headers=HEADERS_AJAX,
-        timeout=20
-    )
+    try:
+        resp = session.post(
+            f"{BASE_URL}/searchZhcx.do",
+            data=data,
+            headers=HEADERS_AJAX,
+            timeout=20
+        )
+    except Exception as e:
+        print(f"[查询] 请求异常: {type(e).__name__}: {e}")
+        if DEBUG:
+            print(traceback.format_exc())
+        return None, 0, 0
+
     print(f"[查询] status={resp.status_code}, len={len(resp.text)}")
     if resp.status_code != 200:
+        print(f"[查询] 非200响应: headers={dict(resp.headers)}")
         return None, 0, 0
     try:
         j = resp.json()
+        if DEBUG:
+            print(f"[查询] JSON前500字符: {json.dumps(j, ensure_ascii=False, default=str)[:500]}")
         if isinstance(j, list) and len(j) > 0:
             result = j[0].get("result", []) or []
             total = j[0].get("totalSize", 0)
@@ -316,7 +497,7 @@ def query_page(session, name, card_num, captcha_id, pcode, page=1):
         return None, 0, 0
 
 
-def query_fzw(name=None, card_num=None, max_retry=3, fetch_all_pages=True):
+def query_fzw(name=None, card_num=None, max_retry=3, fetch_all_pages=True, proxies=None):
     """
     查询失信被执行人主函数
     """
@@ -326,14 +507,13 @@ def query_fzw(name=None, card_num=None, max_retry=3, fetch_all_pages=True):
     print(f"{'='*60}")
 
     # 初始化 session
-    session, html, init_cid = init_session()
+    session, html, init_cid = init_session(proxies=proxies)
     if session is None:
         print("[!] Session 初始化失败，无法查询")
         save_records(name, card_num, [], queried_at)
         return []
 
     all_results = []
-    success = False
 
     for attempt in range(1, max_retry + 1):
         print(f"\n[尝试 {attempt}/{max_retry}]")
@@ -361,14 +541,13 @@ def query_fzw(name=None, card_num=None, max_retry=3, fetch_all_pages=True):
 
         if results is None:
             print("[!] 查询请求失败，重新初始化 session...")
-            session, html, init_cid = init_session()
+            session, html, init_cid = init_session(proxies=proxies)
             if session is None:
                 break
             continue
 
         print(f"[结果] 第1页 {len(results)} 条，总量 {total}")
         all_results.extend(results)
-        success = True
 
         # 翻页获取全部结果
         if fetch_all_pages and total > 10:
@@ -427,7 +606,45 @@ def show_db_records(limit=20):
     print(f"共 {len(rows)} 条记录（最新 {limit} 条）")
 
 
+def parse_proxy_args(proxy_url=None):
+    if not proxy_url:
+        return None
+    return {
+        "http": proxy_url,
+        "https": proxy_url,
+    }
+
+
+def run_diagnostics(session=None):
+    print("\n[诊断] 开始网络诊断")
+    describe_environment()
+    hostname = urlparse(BASE_URL).hostname
+    print(f"[诊断] DNS({hostname}): {dns_lookup(hostname)}")
+    tls_result = tls_probe(hostname)
+    if tls_result.get("ok"):
+        print(
+            f"[诊断] TLS握手成功: {tls_result.get('tls_version')} | {tls_result.get('cipher')} | "
+            f"{tls_result.get('ms')}ms"
+        )
+        print(f"[诊断] 证书主题: {tls_result.get('subject')}")
+        print(f"[诊断] 证书颁发者: {tls_result.get('issuer')}")
+    else:
+        print(f"[诊断] TLS握手失败: {tls_result.get('error')} ({tls_result.get('ms')}ms)")
+
+    sess = session or create_session(debug=DEBUG, verify=VERIFY_TLS)
+    try:
+        resp = sess.get(f"{BASE_URL}/", headers=HEADERS_HTML, timeout=15, allow_redirects=True)
+        print(f"[诊断] 首页探测: status={resp.status_code}, len={len(resp.text)}, final_url={resp.url}")
+        print(f"[诊断] 首页响应头: content-type={resp.headers.get('content-type', '')}")
+    except Exception as e:
+        print(f"[诊断] 首页探测异常: {type(e).__name__}: {e}")
+        if DEBUG:
+            print(traceback.format_exc())
+
+
 def main():
+    global DEBUG, VERIFY_TLS
+
     parser = argparse.ArgumentParser(
         description="全国法院失信被执行人查询工具",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -438,6 +655,9 @@ def main():
   python3 fzw.py --name 某某科技有限公司
   python3 fzw.py --show
   python3 fzw.py --show --limit 50
+  python3 fzw.py --name 张三 --debug
+  python3 fzw.py --name 张三 --debug --proxy http://127.0.0.1:7890
+  python3 fzw.py --name 张三 --diag-only
         """
     )
     parser.add_argument("--name", "-n", help="姓名或企业名称")
@@ -446,12 +666,27 @@ def main():
     parser.add_argument("--limit", "-l", type=int, default=20, help="显示记录条数（默认20）")
     parser.add_argument("--no-paging", action="store_true", help="只获取第一页结果")
     parser.add_argument("--force", action="store_true", help="即使网络检测失败也强制执行")
+    parser.add_argument("--debug", action="store_true", help="开启详细网络/请求日志")
+    parser.add_argument("--diag-only", action="store_true", help="只做网络诊断，不执行查询")
+    parser.add_argument("--proxy", help="显式指定代理，例如 http://host:port")
+    parser.add_argument("--insecure", action="store_true", help="跳过TLS证书校验（仅用于排障）")
     args = parser.parse_args()
+
+    DEBUG = args.debug
+    VERIFY_TLS = not args.insecure
 
     init_db()
 
     if args.show:
         show_db_records(args.limit)
+        return
+
+    proxies = parse_proxy_args(args.proxy)
+    diag_session = create_session(debug=DEBUG, proxies=proxies, verify=VERIFY_TLS)
+    print_session_info(diag_session, "Startup")
+    run_diagnostics(diag_session)
+
+    if args.diag_only:
         return
 
     if not args.name and not args.card:
@@ -460,14 +695,19 @@ def main():
 
     # 网络自检
     print("[网络检测] 检测出口IP及法执网可达性...")
-    out_ip, is_mainland, site_ok = check_network()
+    out_ip, is_mainland, site_ok = check_network(session=diag_session)
     mainland_str = "✅ 大陆IP" if is_mainland else "⚠️  非大陆IP"
-    site_str = "✅ 可达" if site_ok else "❌ 不可达（可能被墙或IP封禁）"
+    site_str = "✅ 可达" if site_ok else "❌ 不可达（可能被墙、被企业策略拦截、证书/代理不匹配）"
     print(f"  出口IP: {out_ip} ({mainland_str})")
     print(f"  法执网: {site_str}")
     if not site_ok:
         print("\n[!] 法执网不可达，查询可能失败。")
-        print("    建议：确认 zxgk.court.gov.cn 已走大陆VPN通道")
+        print("    建议排查：")
+        print("    1) 浏览器是否走了企业代理/PAC，而 requests 没有")
+        print("    2) 企业根证书是否已被 Python/requests 信任")
+        print("    3) 是否被企业网关按 User-Agent/TLS 指纹/HTTP 协议策略拦截")
+        print("    4) 可尝试 --proxy 或在环境变量中设置 HTTPS_PROXY")
+        print("    5) 如怀疑证书拦截，可临时用 --insecure 验证是否为证书链问题")
         if not args.force:
             print("    使用 --force 强制继续查询")
             return
@@ -475,7 +715,8 @@ def main():
     query_fzw(
         name=args.name,
         card_num=args.card,
-        fetch_all_pages=not args.no_paging
+        fetch_all_pages=not args.no_paging,
+        proxies=proxies
     )
 
 
