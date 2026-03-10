@@ -71,7 +71,9 @@ github-<repo>/
 
 ## 启动方式
 
-### 1) 初始化全局配置
+### 1) 初始化默认配置
+
+默认配置文件位于 `skills/occd/occd.json`。如需覆盖默认值，可直接编辑该文件，或显式指定 `--config`。\n
 
 ```bash
 python scripts/occd_utils.py config-init \

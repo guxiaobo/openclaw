@@ -118,6 +118,12 @@ class Runner:
         args.append("--reset" if reset else "--reuse-if-exists")
         return Path(occd_util(*args)["worktree_path"])
 
+    def scenario_default_skill_config(self):
+        cfg = run_json([PY, str(UTIL), "config-show"])
+        assert_true(cfg["config"].endswith("skills/occd/occd.json"), f"default config should resolve to skill occd.json, got {cfg['config']}")
+        assert_true(cfg["data"]["opencode_path"].endswith("/.opencode/bin/opencode"), "default skill config should expose production opencode path")
+        self.results["default_skill_config"] = cfg
+
     def scenario_multi_commit_interval(self):
         repo = self.create_repo("scenario-multi-commit", "github-interval")
         wd = repo.parent
@@ -227,6 +233,7 @@ class Runner:
         }
 
     def run_all(self):
+        self.scenario_default_skill_config()
         self.scenario_multi_commit_interval()
         self.scenario_preflight_batch()
         self.scenario_blocked_then_new_commit()

@@ -1,0 +1,10 @@
+{
+  "work_dir": "/Users/guxiaobo/Documents/occd",
+  "poll_interval": 300,
+  "max_agents": 4,
+  "max_fix_retries": 3,
+  "base_branch": "main",
+  "auto_push": true,
+  "opencode_path": "/Users/guxiaobo/.opencode/bin/opencode",
+  "opencode_args": "run"
+}

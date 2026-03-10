@@ -11,7 +11,7 @@
 
 ### config-init
 
-初始化全局配置文件，默认路径：`~/.openclaw/occd-config.json`。
+初始化配置文件。默认优先使用 `skills/occd/occd.json`；若未找到，则回退到 `~/.openclaw/occd-config.json`。
 也可通过 `--config <path>` 或环境变量 `OCCD_CONFIG_PATH` 使用独立配置，避免测试覆盖生产配置。
 
 ```bash

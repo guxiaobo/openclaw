@@ -25,7 +25,9 @@ TASK_STATUS = {"pending", "spawned", "running", "done", "failed"}
 OUTCOMES = {"success", "failure", "partial"}
 TASK_TYPES = {"coding", "test-write", "test-run"}
 TASK_ID_RE = re.compile(r"^([a-z0-9][a-z0-9-]*)-(\d+)-(\d+)-(coding|test-write|test-run)$")
-DEFAULT_CONFIG_PATH = Path(os.environ.get("OCCD_CONFIG_PATH", Path.home() / ".openclaw" / "occd-config.json")).expanduser()
+SKILL_DIR = Path(__file__).resolve().parent.parent
+DEFAULT_SKILL_CONFIG_PATH = SKILL_DIR / "occd.json"
+LEGACY_CONFIG_PATH = Path.home() / ".openclaw" / "occd-config.json"
 LOCK_DIRNAME = ".locks"
 
 DB_SCHEMA = """
@@ -108,6 +110,17 @@ CREATE INDEX IF NOT EXISTS idx_task_events_entity        ON task_events(entity_t
 CREATE INDEX IF NOT EXISTS idx_task_events_time          ON task_events(created_at);
 """
 
+
+
+def resolve_config_path(explicit: str | None = None) -> Path:
+    if explicit:
+        return Path(explicit).expanduser()
+    env_path = os.environ.get("OCCD_CONFIG_PATH")
+    if env_path:
+        return Path(env_path).expanduser()
+    if DEFAULT_SKILL_CONFIG_PATH.exists():
+        return DEFAULT_SKILL_CONFIG_PATH
+    return LEGACY_CONFIG_PATH
 
 def ts_ms() -> int:
     return int(datetime.now(timezone.utc).timestamp() * 1000)
@@ -336,7 +349,7 @@ def resolve_paths_for_commit(repo: Path, paths: list[str] | None, include_db: bo
 
 
 def cmd_config_init(args):
-    path = Path(args.config).expanduser()
+    path = resolve_config_path(args.config)
     config = {
         "work_dir": str(Path(args.work_dir).expanduser()),
         "poll_interval": args.poll_interval,
@@ -353,13 +366,13 @@ def cmd_config_init(args):
 
 
 def cmd_config_show(args):
-    path = Path(args.config).expanduser()
+    path = resolve_config_path(args.config)
     data = read_config(path)
     output({"success": True, "config": str(path), "data": data})
 
 
 def cmd_config_set(args):
-    path = Path(args.config).expanduser()
+    path = resolve_config_path(args.config)
     data = read_config(path)
     if args.work_dir:
         data["work_dir"] = str(Path(args.work_dir).expanduser())
@@ -1074,7 +1087,7 @@ def cmd_commit_push(args):
 
 
 def cmd_build_opencode_command(args):
-    config = read_config(Path(args.config).expanduser())
+    config = read_config(resolve_config_path(args.config))
     extra_args = args.extra_arg or []
     result = build_opencode_command_from_config(config, args.prompt, extra_args)
     output({"success": True, **result})
@@ -1107,7 +1120,7 @@ def build_parser() -> argparse.ArgumentParser:
         return sub.add_parser(name, help=help_text)
 
     s = sp("config-init", "初始化全局配置")
-    s.add_argument("--config", default=str(DEFAULT_CONFIG_PATH))
+    s.add_argument("--config", default=None)
     s.add_argument("--work-dir", required=True)
     s.add_argument("--poll-interval", type=int, required=True)
     s.add_argument("--max-agents", type=int, default=os.cpu_count() or 4)
@@ -1119,11 +1132,11 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(func=cmd_config_init)
 
     s = sp("config-show", "显示全局配置")
-    s.add_argument("--config", default=str(DEFAULT_CONFIG_PATH))
+    s.add_argument("--config", default=None)
     s.set_defaults(func=cmd_config_show)
 
     s = sp("config-set", "更新全局配置")
-    s.add_argument("--config", default=str(DEFAULT_CONFIG_PATH))
+    s.add_argument("--config", default=None)
     s.add_argument("--work-dir")
     s.add_argument("--poll-interval", type=int)
     s.add_argument("--max-agents", type=int)
@@ -1289,7 +1302,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(func=cmd_commit_push)
 
     s = sp("build-opencode-command", "根据全局配置生成 OpenCode 命令")
-    s.add_argument("--config", default=str(DEFAULT_CONFIG_PATH))
+    s.add_argument("--config", default=None)
     s.add_argument("--prompt", required=True)
     s.add_argument("--extra-arg", action="append")
     s.set_defaults(func=cmd_build_opencode_command)

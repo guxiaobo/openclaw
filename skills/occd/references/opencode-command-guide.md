@@ -28,7 +28,7 @@ OCCD 中，coding / test-write / 需要修复的实现类任务应委托 OpenCod
 
 ```bash
 python scripts/occd_utils.py build-opencode-command \
-  --config ~/.openclaw/occd-config.json \
+  --config skills/occd/occd.json \
   --prompt "在当前 worktree 中实现登录接口并补充测试"
 ```
 
