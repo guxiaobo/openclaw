@@ -42,6 +42,9 @@ venv/bin/python3 fzw.py --card 110101199001011234 --debug --save-captcha
 
 # 浏览器模式（更贴近人工浏览器链路）
 venv/bin/python3 fzw.py --card 110101199001011234 --browser --save-captcha
+
+# 仅输出纯JSON结果摘要，便于外层系统解析
+venv/bin/python3 fzw.py --card 110101199001011234 --result-json
 ```
 
 ---
@@ -72,7 +75,7 @@ venv/bin/python3 fzw.py --card 110101199001011234 --browser --save-captcha
 - **验证码识别**：ddddocr 本地识别，建议 Python 3.10 + `ddddocr==1.0.6` + `Pillow<10`
 - **重试策略**：验证码请求、验证码校验、查询提交均会自动重试并带退避，多次失败时终止查询，不再误写“无结果”
 - **浏览器模式**：支持 `--browser` 通过真实 Chrome 上下文发起请求，更贴近“浏览器能成功”的实际链路；失败时会保存浏览器截图/HTML到 `browser-debug/`
-- **标准结果**：无论成功还是失败，都会输出一行 `[RESULT] {...}` 摘要，便于上层系统区分 `OK`、`WAF_BLOCKED`、`EMPTY_BROWSER_PAGE`、`QUERY_SUBMIT_TIMEOUT` 等状态
+- **标准结果**：无论成功还是失败，都会输出一行 `[RESULT] {...}` 摘要；若使用 `--result-json`，则仅输出纯 JSON 摘要，便于上层系统区分 `OK`、`WAF_BLOCKED`、`EMPTY_BROWSER_PAGE`、`QUERY_SUBMIT_TIMEOUT` 等状态
 - **排障增强**：支持 `--save-captcha` 将验证码图片落盘到 `captcha-debug/`，并在日志中关联输出图片路径、OCR结果、验证码校验结果
 - **反爬处理**：完整模拟浏览器 headers，维护 WAF session cookie
 - **接口**：

@@ -349,6 +349,9 @@ def build_result_payload(ok, mode, status, message, results=None, total=0, queri
     }
 
 
+RESULT_JSON_ONLY = False
+
+
 def print_result_payload(payload):
     summary = {
         "ok": payload.get("ok"),
@@ -360,7 +363,11 @@ def print_result_payload(payload):
     }
     if payload.get("extra"):
         summary["extra"] = payload.get("extra")
-    print(f"[RESULT] {json.dumps(summary, ensure_ascii=False)}")
+    text = json.dumps(summary, ensure_ascii=False)
+    if RESULT_JSON_ONLY:
+        print(text)
+    else:
+        print(f"[RESULT] {text}")
 
 
 def classify_requests_error(last_error):
@@ -1100,7 +1107,7 @@ def run_diagnostics(session=None):
 
 
 def main():
-    global DEBUG, VERIFY_TLS, SAVE_CAPTCHA
+    global DEBUG, VERIFY_TLS, SAVE_CAPTCHA, RESULT_JSON_ONLY
 
     python_ok = ensure_python_version()
 
@@ -1119,6 +1126,7 @@ def main():
   python3 fzw.py --name 张三 --diag-only
   python3 fzw.py --name 张三 --debug --save-captcha
   python3 fzw.py --card 110101199001011234 --browser --save-captcha
+  python3 fzw.py --card 110101199001011234 --result-json
         """
     )
     parser.add_argument("--name", "-n", help="姓名或企业名称")
@@ -1134,11 +1142,13 @@ def main():
     parser.add_argument("--save-captcha", action="store_true", help="将每次获取到的验证码图片保存到本地，便于排障")
     parser.add_argument("--browser", action="store_true", help="使用真实浏览器上下文执行查询，尽量贴近人工浏览器链路")
     parser.add_argument("--headed", action="store_true", help="浏览器模式下显示浏览器窗口")
+    parser.add_argument("--result-json", action="store_true", help="仅输出纯 JSON 结果摘要，便于外层脚本直接解析")
     args = parser.parse_args()
 
     DEBUG = args.debug
     VERIFY_TLS = not args.insecure
     SAVE_CAPTCHA = args.save_captcha
+    RESULT_JSON_ONLY = args.result_json
 
     init_db()
 
