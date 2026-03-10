@@ -72,6 +72,9 @@ HEADERS_AJAX = {
 
 DEBUG = False
 VERIFY_TLS = True
+REQUIRED_PYTHON = (3, 10)
+CAPTCHA_TIMEOUT = 20
+CAPTCHA_RETRIES = 4
 
 
 class DebugSession(requests.Session):
@@ -274,6 +277,18 @@ def check_network(session=None):
     return out_ip, is_mainland, site_ok
 
 
+def ensure_python_version():
+    current = sys.version_info[:2]
+    if current != REQUIRED_PYTHON:
+        print(
+            f"[环境] 当前 Python 为 {current[0]}.{current[1]}，"
+            f"建议使用 Python {REQUIRED_PYTHON[0]}.{REQUIRED_PYTHON[1]} 以兼容 ddddocr。"
+        )
+        print("[环境] 示例：python3.10 -m venv venv && ./venv/bin/pip install -r requirements.txt")
+        return False
+    return True
+
+
 def init_db():
     """初始化数据库"""
     conn = sqlite3.connect(DB_PATH)
@@ -404,31 +419,43 @@ def init_session(max_try=3, proxies=None):
     return None, None, None
 
 
-def get_captcha(session, captcha_id=None):
-    """获取并识别验证码"""
-    if captcha_id is None:
+def get_captcha(session, captcha_id=None, timeout=CAPTCHA_TIMEOUT, retries=CAPTCHA_RETRIES):
+    """获取并识别验证码；返回 (captcha_id, text, ok, reason)"""
+    last_reason = "unknown"
+
+    for attempt in range(1, retries + 1):
+        if captcha_id is None:
+            captcha_id = make_captcha_id()
+        rand = str(time.time())
+        url = f"{BASE_URL}/captcha.do?captchaId={captcha_id}&random={rand}"
+        try:
+            resp = session.get(
+                url,
+                headers={**HEADERS_AJAX, "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8"},
+                timeout=timeout
+            )
+            content_type = resp.headers.get("content-type", "")
+            if resp.status_code == 200 and "image" in content_type and len(resp.content) > 200:
+                text = recognize_captcha(resp.content)
+                print(f"[验证码] 第{attempt}/{retries}次 ID={captcha_id[:8]}... 识别={text}")
+                if text:
+                    return captcha_id, text, True, "ok"
+                last_reason = "ocr_failed"
+                time.sleep(min(attempt, 2))
+            else:
+                last_reason = f"bad_response:{resp.status_code}:{content_type}:{len(resp.content)}"
+                print(f"[验证码] 第{attempt}/{retries}次获取失败: status={resp.status_code}, type={content_type}, len={len(resp.content)}")
+                time.sleep(min(attempt, 2))
+        except Exception as e:
+            last_reason = f"{type(e).__name__}: {e}"
+            print(f"[验证码] 第{attempt}/{retries}次请求异常: {type(e).__name__}: {e}")
+            if DEBUG:
+                print(traceback.format_exc())
+            time.sleep(min(attempt, 2))
+
         captcha_id = make_captcha_id()
-    rand = str(time.time())
-    url = f"{BASE_URL}/captcha.do?captchaId={captcha_id}&random={rand}"
-    try:
-        resp = session.get(
-            url,
-            headers={**HEADERS_AJAX, "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8"},
-            timeout=10
-        )
-        content_type = resp.headers.get("content-type", "")
-        if resp.status_code == 200 and "image" in content_type and len(resp.content) > 200:
-            text = recognize_captcha(resp.content)
-            print(f"[验证码] ID={captcha_id[:8]}... 识别={text}")
-            return captcha_id, text
-        else:
-            print(f"[验证码] 获取失败: status={resp.status_code}, type={content_type}, len={len(resp.content)}")
-            return captcha_id, None
-    except Exception as e:
-        print(f"[验证码] 请求异常: {type(e).__name__}: {e}")
-        if DEBUG:
-            print(traceback.format_exc())
-        return captcha_id, None
+
+    return captcha_id, None, False, last_reason
 
 
 def check_captcha(session, captcha_id, pcode):
@@ -510,26 +537,32 @@ def query_fzw(name=None, card_num=None, max_retry=3, fetch_all_pages=True, proxi
     session, html, init_cid = init_session(proxies=proxies)
     if session is None:
         print("[!] Session 初始化失败，无法查询")
-        save_records(name, card_num, [], queried_at)
-        return []
+        return None
 
     all_results = []
+    query_succeeded = False
+    last_error = None
 
     for attempt in range(1, max_retry + 1):
         print(f"\n[尝试 {attempt}/{max_retry}]")
 
         # 获取验证码（每次重新生成 ID）
         captcha_id = make_captcha_id()
-        captcha_id, pcode = get_captcha(session, captcha_id)
+        captcha_id, pcode, captcha_ok, captcha_reason = get_captcha(session, captcha_id)
 
-        if not pcode:
-            print("[!] 验证码识别失败，重试...")
+        if not captcha_ok or not pcode:
+            last_error = f"captcha_failed:{captcha_reason}"
+            print(f"[!] 验证码获取/识别失败：{captcha_reason}，重试...")
+            session, html, init_cid = init_session(proxies=proxies)
+            if session is None:
+                break
             time.sleep(1)
             continue
 
         # 可选：先校验验证码
         ok = check_captcha(session, captcha_id, pcode)
         if not ok:
+            last_error = f"captcha_check_failed:{pcode}"
             print(f"[!] 验证码 '{pcode}' 校验不通过，重新获取...")
             time.sleep(0.5)
             continue
@@ -540,12 +573,14 @@ def query_fzw(name=None, card_num=None, max_retry=3, fetch_all_pages=True, proxi
         results, total, cur_page = query_page(session, name, card_num, captcha_id, pcode, page=1)
 
         if results is None:
+            last_error = "query_page_failed"
             print("[!] 查询请求失败，重新初始化 session...")
             session, html, init_cid = init_session(proxies=proxies)
             if session is None:
                 break
             continue
 
+        query_succeeded = True
         print(f"[结果] 第1页 {len(results)} 条，总量 {total}")
         all_results.extend(results)
 
@@ -556,17 +591,25 @@ def query_fzw(name=None, card_num=None, max_retry=3, fetch_all_pages=True, proxi
                 print(f"[翻页] 获取第 {page}/{total_pages} 页...")
                 time.sleep(0.5)
                 # 翻页需要新验证码
-                cid2, pcode2 = get_captcha(session, make_captcha_id())
-                if not pcode2:
-                    print(f"[!] 第{page}页验证码失败，停止翻页")
+                cid2, pcode2, ok2, reason2 = get_captcha(session, make_captcha_id())
+                if not ok2 or not pcode2:
+                    print(f"[!] 第{page}页验证码失败（{reason2}），停止翻页")
                     break
                 more, _, _ = query_page(session, name, card_num, cid2, pcode2, page=page)
-                if more is None or len(more) == 0:
+                if more is None:
+                    print(f"[!] 第{page}页查询失败，停止翻页")
+                    break
+                if len(more) == 0:
                     break
                 all_results.extend(more)
                 print(f"[翻页] 第{page}页 {len(more)} 条，累计 {len(all_results)} 条")
 
         break
+
+    if not query_succeeded:
+        print(f"[失败] 本次查询未成功完成，最后错误: {last_error or 'unknown'}")
+        print("[失败] 不写入“无结果”记录，避免把网络/验证码失败误判为查无结果。")
+        return None
 
     # 打印结果摘要
     print(f"\n{'='*60}")
@@ -645,6 +688,8 @@ def run_diagnostics(session=None):
 def main():
     global DEBUG, VERIFY_TLS
 
+    python_ok = ensure_python_version()
+
     parser = argparse.ArgumentParser(
         description="全国法院失信被执行人查询工具",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -676,6 +721,10 @@ def main():
     VERIFY_TLS = not args.insecure
 
     init_db()
+
+    if not python_ok and not args.show:
+        print("[环境] 建议切换到 Python 3.10 后再执行真实查询，否则 ddddocr 可能异常。")
+        return
 
     if args.show:
         show_db_records(args.limit)

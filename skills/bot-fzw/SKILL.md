@@ -8,11 +8,11 @@
 
 ```bash
 cd skills/bot-fzw
-python3 -m venv venv
+python3.10 -m venv venv
 venv/bin/pip install -r requirements.txt
 ```
 
-> 需要 Python 3.10–3.13（不支持 3.14+）
+> 强烈建议使用 Python 3.10。当前依赖组合里，`ddddocr` 在 3.13/3.14 上兼容性不稳定，容易出现导入失败或 Pillow 兼容问题。
 
 ---
 
@@ -63,7 +63,8 @@ venv/bin/python3 fzw.py --show --limit 50
 
 ## 技术说明
 
-- **验证码识别**：ddddocr 本地识别，识别失败自动重试 3 次
+- **验证码识别**：ddddocr 本地识别，建议 Python 3.10 + `ddddocr==1.0.6` + `Pillow<10`
+- **重试策略**：验证码请求与识别会自动重试，多次失败时终止查询，不再误写“无结果”
 - **反爬处理**：完整模拟浏览器 headers，维护 WAF session cookie
 - **接口**：
   - 主页：`GET /zhzxgk/`（获取 WAF cookie + JSESSIONID）
