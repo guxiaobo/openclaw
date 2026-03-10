@@ -75,6 +75,8 @@ VERIFY_TLS = True
 REQUIRED_PYTHON = (3, 10)
 CAPTCHA_TIMEOUT = 20
 CAPTCHA_RETRIES = 4
+SAVE_CAPTCHA = False
+CAPTCHA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "captcha-debug")
 
 
 class DebugSession(requests.Session):
@@ -373,6 +375,24 @@ def make_captcha_id():
     return str(uuid.uuid4()).replace("-", "")
 
 
+def save_captcha_image(image_bytes, captcha_id, attempt, recognized_text=None):
+    if not SAVE_CAPTCHA:
+        return None
+    os.makedirs(CAPTCHA_DIR, exist_ok=True)
+    suffix = recognized_text or "unknown"
+    suffix = re.sub(r"[^0-9A-Za-z_-]", "_", suffix)
+    filename = f"{datetime.now().strftime('%Y%m%d-%H%M%S')}_{captcha_id[:8]}_try{attempt}_{suffix}.jpg"
+    path = os.path.join(CAPTCHA_DIR, filename)
+    try:
+        with open(path, "wb") as f:
+            f.write(image_bytes)
+        print(f"[验证码] 已保存图片: {path}")
+        return path
+    except Exception as e:
+        print(f"[验证码] 保存图片失败: {e}")
+        return None
+
+
 def recognize_captcha(image_bytes):
     """使用 ddddocr 识别验证码"""
     try:
@@ -437,6 +457,7 @@ def get_captcha(session, captcha_id=None, timeout=CAPTCHA_TIMEOUT, retries=CAPTC
             content_type = resp.headers.get("content-type", "")
             if resp.status_code == 200 and "image" in content_type and len(resp.content) > 200:
                 text = recognize_captcha(resp.content)
+                save_captcha_image(resp.content, captcha_id, attempt, text)
                 print(f"[验证码] 第{attempt}/{retries}次 ID={captcha_id[:8]}... 识别={text}")
                 if text:
                     return captcha_id, text, True, "ok"
@@ -686,7 +707,7 @@ def run_diagnostics(session=None):
 
 
 def main():
-    global DEBUG, VERIFY_TLS
+    global DEBUG, VERIFY_TLS, SAVE_CAPTCHA
 
     python_ok = ensure_python_version()
 
@@ -703,6 +724,7 @@ def main():
   python3 fzw.py --name 张三 --debug
   python3 fzw.py --name 张三 --debug --proxy http://127.0.0.1:7890
   python3 fzw.py --name 张三 --diag-only
+  python3 fzw.py --name 张三 --debug --save-captcha
         """
     )
     parser.add_argument("--name", "-n", help="姓名或企业名称")
@@ -715,10 +737,12 @@ def main():
     parser.add_argument("--diag-only", action="store_true", help="只做网络诊断，不执行查询")
     parser.add_argument("--proxy", help="显式指定代理，例如 http://host:port")
     parser.add_argument("--insecure", action="store_true", help="跳过TLS证书校验（仅用于排障）")
+    parser.add_argument("--save-captcha", action="store_true", help="将每次获取到的验证码图片保存到本地，便于排障")
     args = parser.parse_args()
 
     DEBUG = args.debug
     VERIFY_TLS = not args.insecure
+    SAVE_CAPTCHA = args.save_captcha
 
     init_db()
 
