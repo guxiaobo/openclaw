@@ -179,6 +179,22 @@ python scripts/occd_utils.py db-block-req \
   --conflict-group cg-001
 ```
 
+### 拆分结果校验（写入 task 前）
+
+在 `write-tasks` 前，先校验 LLM 输出是否完整覆盖需求：
+
+```bash
+python scripts/occd_decomposition_validator.py --input-file /tmp/decomposition.json
+```
+
+校验点包括：
+
+- 是否提供 `coverage_points`
+- 是否提供 `deliverables`
+- 是否所有 coverage points 都被 `tasks[*].covers` 覆盖
+- 是否包含 `test-write` 与 `test-run`
+- 若只有骨架任务，是否同时提供完整后续任务树
+
 ### write-review
 
 生成需求澄清文件，并把 requirement 标记为 `reviewing`。
@@ -376,8 +392,8 @@ python scripts/occd_utils.py commit-push \
 
 ```bash
 python scripts/occd_utils.py build-opencode-command \
-  --config ~/.openclaw/occd-config.json \
-  --prompt "在当前 worktree 中实现登录接口"
+  --config skills/occd/occd.json \
+  --prompt-file /path/to/task-prompt.txt
 ```
 
 可选追加额外参数：

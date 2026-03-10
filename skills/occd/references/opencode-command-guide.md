@@ -24,13 +24,15 @@ OCCD 中，coding / test-write / 需要修复的实现类任务应委托 OpenCod
 
 ## 推荐做法
 
-主代理或子代理不要手写散乱命令，优先调用：
+主代理或子代理不要手写散乱命令，优先调用。对于 OCCD 任务，推荐使用 `--prompt-file`，直接把 task prompt 文件交给 OpenCode，而不是把整段内容塞进命令行：
 
 ```bash
 python scripts/occd_utils.py build-opencode-command \
   --config skills/occd/occd.json \
-  --prompt "在当前 worktree 中实现登录接口并补充测试"
+  --prompt-file /path/to/task-prompt.txt
 ```
+
+仅在一次性短问答场景下，才使用 `--prompt` 直接传文本。
 
 它会返回结构化结果：
 

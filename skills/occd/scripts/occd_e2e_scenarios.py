@@ -124,6 +124,94 @@ class Runner:
         assert_true(cfg["data"]["opencode_path"].endswith("/.opencode/bin/opencode"), "default skill config should expose production opencode path")
         self.results["default_skill_config"] = cfg
 
+    def scenario_build_opencode_command_prompt_file(self):
+        prompt_file = self.base_dir / "sample-task-prompt.txt"
+        write(prompt_file, "这是给 OpenCode 的完整 task prompt。\n")
+        result = run_json([PY, str(UTIL), "build-opencode-command", "--prompt-file", str(prompt_file)])
+        assert_true(result["prompt_file"] == str(prompt_file), "prompt_file should be echoed in result")
+        assert_true("--prompt-file" in result["argv"], "argv should use --prompt-file")
+        assert_true(str(prompt_file) in result["argv"], "argv should contain prompt file path")
+        assert_true("这是给 OpenCode 的完整 task prompt" not in result["command"], "command should not inline prompt content")
+        self.results["build_opencode_command_prompt_file"] = result
+
+    def scenario_decomposition_validator(self):
+        validator = SCRIPT_DIR / "occd_decomposition_validator.py"
+        bad_payload = {
+            "decision": "tasks",
+            "coverage_points": ["实现登录接口", "补测试并通过"],
+            "deliverables": ["登录功能可用", "测试通过"],
+            "decomposition_check": {
+                "contains_only_scaffold": True,
+                "is_complete": False,
+                "missing_points": ["补测试并通过"],
+                "task_tree": []
+            },
+            "tasks": [
+                {
+                    "id": "feature-login-001-001-coding",
+                    "type": "coding",
+                    "summary": "初始化登录模块骨架",
+                    "details": "创建登录模块 scaffold",
+                    "constraints": "最小变更",
+                    "acceptance": "- [ ] 骨架存在",
+                    "depends_on": [],
+                    "notes": "无",
+                    "covers": ["实现登录接口"]
+                }
+            ]
+        }
+        ok_payload = {
+            "decision": "tasks",
+            "coverage_points": ["实现登录接口", "补登录测试", "执行最终测试"],
+            "deliverables": ["登录功能可用", "测试通过"],
+            "decomposition_check": {
+                "contains_only_scaffold": False,
+                "is_complete": True,
+                "missing_points": [],
+                "task_tree": ["001 骨架与接口", "002 测试编写", "003 测试执行"]
+            },
+            "tasks": [
+                {
+                    "id": "feature-login-001-001-coding",
+                    "type": "coding",
+                    "summary": "实现登录接口和必要骨架",
+                    "details": "完成登录接口与必要模块初始化",
+                    "constraints": "最小实现",
+                    "acceptance": "- [ ] 登录接口可调用",
+                    "depends_on": [],
+                    "notes": "无",
+                    "covers": ["实现登录接口"]
+                },
+                {
+                    "id": "feature-login-002-001-test-write",
+                    "type": "test-write",
+                    "summary": "编写登录测试",
+                    "details": "补成功/失败测试",
+                    "constraints": "unittest",
+                    "acceptance": "- [ ] 测试已补齐",
+                    "depends_on": ["feature-login-001-001-coding"],
+                    "notes": "无",
+                    "covers": ["补登录测试"]
+                },
+                {
+                    "id": "feature-login-003-001-test-run",
+                    "type": "test-run",
+                    "summary": "执行最终测试",
+                    "details": "运行全部测试",
+                    "constraints": "失败则失败",
+                    "acceptance": "- [ ] 全部通过",
+                    "depends_on": ["feature-login-002-001-test-write"],
+                    "notes": "无",
+                    "covers": ["执行最终测试"]
+                }
+            ]
+        }
+        bad = run([PY, str(validator), "--input-json", json.dumps(bad_payload, ensure_ascii=False)], check=False)
+        assert_true(bad.returncode != 0, "skeleton-only decomposition should be rejected")
+        good = run_json([PY, str(validator), "--input-json", json.dumps(ok_payload, ensure_ascii=False)])
+        assert_true(good["success"] is True, "complete decomposition should pass validator")
+        self.results["decomposition_validator"] = {"bad_returncode": bad.returncode, "good": good}
+
     def scenario_multi_commit_interval(self):
         repo = self.create_repo("scenario-multi-commit", "github-interval")
         wd = repo.parent
@@ -234,6 +322,8 @@ class Runner:
 
     def run_all(self):
         self.scenario_default_skill_config()
+        self.scenario_build_opencode_command_prompt_file()
+        self.scenario_decomposition_validator()
         self.scenario_multi_commit_interval()
         self.scenario_preflight_batch()
         self.scenario_blocked_then_new_commit()

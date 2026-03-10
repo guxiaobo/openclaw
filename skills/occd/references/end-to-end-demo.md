@@ -179,8 +179,8 @@ python scripts/occd_controller.py batch-ready \
 
 ```bash
 python scripts/occd_utils.py build-opencode-command \
-  --config ~/.openclaw/occd-config.json \
-  --prompt "在当前 worktree 中实现登录接口，并保持变更最小。"
+  --config skills/occd/occd.json \
+  --prompt-file /path/to/task-prompt.txt
 ```
 
 再按 `references/subagent-prompt-template.md` 组织完整 prompt，关键要求包括：

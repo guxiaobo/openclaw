@@ -16,6 +16,7 @@ req_file: feature.md # 来源需求文件
 xxx: "001" # 串行批次（同批次内任务串行）
 yyy: "001" # 并行子序号（同 XXX 内并行）
 depends_on: [] # 前置任务 ID 列表（空表示无依赖）
+covers: ["实现登录接口"] # 本任务覆盖的 coverage points
 
 ---
 

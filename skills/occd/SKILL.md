@@ -35,6 +35,7 @@ description: OCCD (OpenCode Continuous Developing) - 多仓库持续开发编排
 - finalize 清单：`references/finalize-checklist.md`
 - end-to-end 演练：`references/end-to-end-demo.md`
 - 自动化场景测试脚本：`scripts/occd_e2e_scenarios.py`
+- 拆分结果校验器：`scripts/occd_decomposition_validator.py`
 - review 格式：`references/review-template.md`
 - DB schema：`references/occd-db-schema.sql`
 
@@ -135,6 +136,7 @@ controller 不会替你做 agent 决策，只会告诉你：
    - 明确：由大语言模型拆分任务并规划串并行，再调用 `write-tasks`
 4. 提示大语言模型时明确要求：写入 `occd/task/` 的每个 task 文件后续会被直接传给 OpenCode，并把文件全文作为提示词运行；因此每个 task 必须自包含、工作量尽量控制在 10 分钟以内，并优先拆成可并发执行的小任务
 5. 拆分时必须按业务域/业务能力组织任务；如果第一步只能做骨架/前置准备，必须同时给出后续完整任务树，不能让用户看到的只有一个骨架任务
+6. 在真正调用 `write-tasks` 前，先用 `scripts/occd_decomposition_validator.py` 对 coverage_points / deliverables / task tree 做完整性校验
 
 拆分任务时统一使用：
 

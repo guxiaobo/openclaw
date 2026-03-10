@@ -54,7 +54,9 @@ python scripts/occd_controller.py poll-plan --work-dir <work_dir>
 3. 由主代理使用大语言模型分析需求
 4. 判断是否明确
 5. 不明确：由大语言模型决定需要澄清，并生成 review 内容；然后调用 `write-review`
-6. 明确：由大语言模型完成任务拆分与串并行规划，再调用 `write-tasks`
+6. 明确：由大语言模型完成任务拆分与串并行规划
+7. 在调用 `write-tasks` 前，先用 `scripts/occd_decomposition_validator.py` 校验 coverage_points / deliverables / task tree 是否完整
+8. 只有校验通过后，才调用 `write-tasks`
 
 关键约束：
 
@@ -76,6 +78,8 @@ python scripts/occd_controller.py poll-plan --work-dir <work_dir>
 - 只有在需求明确时，才输出 task 拆分结果
 - task 拆分要同时给出串行批次 `XXX` 与批内并行 `YYY` 的建议
 - `coding`、`test-write`、`test-run` 的边界要清楚
+- 必须先列出 coverage_points 与 deliverables，再检查 task 清单是否完整覆盖
+- 每个 task 必须通过 `covers` 字段映射到至少一个 coverage_point
 - 写入 `occd/task/` 的每个 task 文件会在后续被直接交给 OpenCode，并把文件全文当作提示词运行，因此 task 内容必须完整、自包含、能直接执行
 - 每个 task 的目标工作量尽量控制在 10 分钟以内
 - 优先把任务拆成可并发执行的小任务，除非存在明确依赖关系
@@ -93,6 +97,7 @@ python scripts/occd_controller.py poll-plan --work-dir <work_dir>
 - 功能实现与测试编写分开
 - 能并行的放同一 `XXX` 批次下不同 `YYY`
 - 真正依赖前置输出的，放到后续 `XXX`
+- 若拆分结果缺失某个 coverage_point、缺少 `test-write` 或 `test-run`，直接判定为拆分不完整并要求重拆
 
 ---
 

@@ -267,16 +267,22 @@ def shell_quote(value: str) -> str:
     return "'" + value.replace("'", "'\"'\"'") + "'"
 
 
-def build_opencode_command_from_config(config: dict[str, Any], prompt: str, extra_args: list[str] | None = None) -> dict[str, Any]:
+def build_opencode_command_from_config(config: dict[str, Any], prompt: str | None = None, prompt_file: str | None = None, extra_args: list[str] | None = None) -> dict[str, Any]:
+    if bool(prompt) == bool(prompt_file):
+        fail("exactly one of prompt or prompt_file must be provided")
     opencode_path = config.get("opencode_path") or "opencode"
     raw_args = config.get("opencode_args") or "run"
     argv = [opencode_path] + [part for part in str(raw_args).split() if part]
     if extra_args:
         argv.extend(extra_args)
-    argv.append(prompt)
+    if prompt_file:
+        argv.extend(["--prompt-file", prompt_file])
+    else:
+        argv.append(prompt or "")
     return {
         "opencode_path": opencode_path,
         "opencode_args": raw_args,
+        "prompt_file": prompt_file,
         "argv": argv,
         "command": " ".join(shell_quote(x) for x in argv),
     }
@@ -1089,7 +1095,7 @@ def cmd_commit_push(args):
 def cmd_build_opencode_command(args):
     config = read_config(resolve_config_path(args.config))
     extra_args = args.extra_arg or []
-    result = build_opencode_command_from_config(config, args.prompt, extra_args)
+    result = build_opencode_command_from_config(config, prompt=args.prompt, prompt_file=args.prompt_file, extra_args=extra_args)
     output({"success": True, **result})
 
 
@@ -1303,7 +1309,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sp("build-opencode-command", "根据全局配置生成 OpenCode 命令")
     s.add_argument("--config", default=None)
-    s.add_argument("--prompt", required=True)
+    s.add_argument("--prompt", default=None)
+    s.add_argument("--prompt-file", default=None)
     s.add_argument("--extra-arg", action="append")
     s.set_defaults(func=cmd_build_opencode_command)
 
