@@ -29,19 +29,32 @@ python scripts/occd_utils.py config-show
 python scripts/occd_controller.py poll-plan --work-dir <work_dir>
 ```
 
-结果里每个 repo 会给出一个 action。
+结果里每个 repo 会给出一个 action；当同一轮发现多个 `new` requirement 时，应优先进入 `preflight_batch`。
 
 补充约束：controller 与主代理都应以 SQLite 状态为准，不扫描 `occd/report/` 目录来反推任务状态。
 
 ---
 
+## action = preflight_batch
+
+1. 收集本轮所有 `status=new` 的 requirement
+2. 对每个 requirement 读取：
+   - 当前 req 文件全文
+   - `processed_commit -> latest_commit` 的提交区间（通过 `req-history`）
+3. 由主代理先做跨需求预检：
+   - 是否存在整体冲突/矛盾
+   - 哪些 requirement 自身信息不足
+4. 对存在冲突的 requirement，分别生成 review，并通过 `db-block-req` 标记为 `blocked`
+5. 对可安全继续的 requirement，再按 commit 时间顺序进入 `analyze_requirement`
+
 ## action = analyze_requirement
 
-1. 读取 `occd/req/<req_file>`
-2. 由主代理使用大语言模型分析需求
-3. 判断是否明确
-4. 不明确：由大语言模型决定需要澄清，并生成 review 内容；然后调用 `write-review`
-5. 明确：由大语言模型完成任务拆分与串并行规划，再调用 `write-tasks`
+1. 读取 `occd/req/<req_file>` 当前全文
+2. 调用 `req-history` 读取从 `processed_commit` 到 `latest_commit` 的完整提交区间
+3. 由主代理使用大语言模型分析需求
+4. 判断是否明确
+5. 不明确：由大语言模型决定需要澄清，并生成 review 内容；然后调用 `write-review`
+6. 明确：由大语言模型完成任务拆分与串并行规划，再调用 `write-tasks`
 
 关键约束：
 
@@ -52,6 +65,9 @@ python scripts/occd_controller.py poll-plan --work-dir <work_dir>
 ### 给大语言模型的分析提示要点
 
 主代理在分析 req 时，应明确提示大语言模型：
+
+- 不能只看最后一个 commit，必须结合整个未处理 commit 区间
+- 同一 req 文件的多个未处理 commit，优先视作一个累计区间来分析
 
 - 先判断需求是否足够明确
 - 若存在关键不确定项，先输出 review 问题，不要拆分 task
@@ -90,8 +106,9 @@ python scripts/occd_utils.py check-new-commit \
 ```
 
 - 有新 commit：
-  - `db-update-req-status --status new`
-  - 重新分析需求
+  - requirement 状态重置为 `new`
+  - 更新 `pending_from_commit/pending_to_commit/pending_commit_count`
+  - 重新参与 preflight / analyze_requirement
 - 没有：保持 `reviewing`
 
 ---
@@ -117,7 +134,7 @@ python scripts/occd_utils.py acquire-lock --repo <repo_path>
 - prompt 中明确要求子代理实际调用 OpenCode 执行 coding / test-write / 需要修复的测试任务
 - OpenCode 启动命令优先使用配置中的 `opencode_path` 与 `opencode_args`
 - 使用 `sessions_spawn(mode="run")`
-- 把返回的 session key 回填到 `db-update-source-status --status spawned --session-key <key>`
+- 把返回的 session key 回填到 `db-update-task-status --status spawned --session-key <key>`
 
 ### 批内并发建议
 
@@ -138,7 +155,7 @@ python scripts/occd_utils.py acquire-lock --repo <repo_path>
 
 ## action = finalize_requirement
 
-当所有 source 都完成后：
+当所有 task 都完成后：
 
 1. 如涉及 coding / test-write 分支，先 merge：
 

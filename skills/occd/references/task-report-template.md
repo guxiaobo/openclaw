@@ -8,7 +8,7 @@
 
 ---
 
-task_id: req001-001-001-coding # 对应 task/ 下的任务 ID
+task_id: feature-calc-001-001-coding # 对应 task/ 下的任务 ID
 task_type: coding # coding | test-write | test-run
 session_key: sess_xxxx # 执行本次任务的子代理 session key
 started_at: 2026-03-09T09:45:00+08:00

@@ -1,8 +1,8 @@
 # Finalize Checklist
 
-当 requirement 的所有 source 任务都完成后，主代理按这份清单收尾。
+当 requirement 的所有 task 任务都完成后，主代理按这份清单收尾。
 
-- [ ] 当前 requirement 下所有 source 状态均为 `done`
+- [ ] 当前 requirement 下所有 task 状态均为 `done`
 - [ ] 已读取最后一轮 task report，没有遗漏 `partial` / `failure`
 - [ ] coding / test-write 分支已按批次合并
 - [ ] 最终测试已执行

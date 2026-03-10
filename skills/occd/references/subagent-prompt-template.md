@@ -1,19 +1,19 @@
 # 子代理 Prompt 模板
 
-给 `sessions_spawn` 使用的标准骨架。目标不是把所有逻辑塞进 prompt，而是让子代理稳定执行一个 source 任务。
+给 `sessions_spawn` 使用的标准骨架。目标不是把所有逻辑塞进 prompt，而是让子代理稳定执行一个 task 任务。
 
 ---
 
 ## 使用时机
 
-当主代理已经确定某个 `reqZZZ-XXX-YYY-{type}` task 定义可以启动时，基于这个模板生成子代理 prompt。
+当主代理已经确定某个 `<req-file-stem>-XXX-YYY-{type}` task 定义可以启动时，基于这个模板生成子代理 prompt。
 
 ---
 
 ## 标准模板
 
 ```text
-你是 OCCD 执行子代理，请完成一个 source 任务。
+你是 OCCD 执行子代理，请完成一个 task 任务。
 
 仓库路径: {repo_path}
 任务文件: {repo_path}/occd/task/{task_id}.md
@@ -22,7 +22,7 @@
 
 必须遵守：
 1. 不要修改 occd/req/ 下任何文件。
-2. 必须先读取 source 任务文件，再开始执行。
+2. 必须先读取 task 任务文件，再开始执行。
 3. 只能通过 scripts/occd_utils.py 更新状态，不要直接操作 occd.db。
 4. 完成后必须写结构化报告到 occd/report/。
 
@@ -31,7 +31,7 @@
    {repo_path}/occd/task/{task_id}.md
 
 2. 立刻登记 running：
-   python scripts/occd_utils.py db-update-source-status \
+   python scripts/occd_utils.py db-update-task-status \
      --repo {repo_path} \
      --task {task_id} \
      --status running \
@@ -58,8 +58,8 @@
    occd/report/report-{task_id}-{timestamp}.md
    报告格式参见 references/task-report-template.md
 
-6. 登记 execution：
-   python scripts/occd_utils.py db-add-execution \
+6. 登记 report：
+   python scripts/occd_utils.py db-add-report \
      --repo {repo_path} \
      --task {task_id} \
      --report-file report-{task_id}-{timestamp}.md \
@@ -69,12 +69,12 @@
      --started-at {started_at_iso} \
      --finished-at {finished_at_iso}
 
-7. 最后更新 source 状态：
+7. 最后更新 task 状态：
    - 成功：
-     python scripts/occd_utils.py db-update-source-status \
+     python scripts/occd_utils.py db-update-task-status \
        --repo {repo_path} --task {task_id} --status done --session-key {session_key}
    - 失败：
-     python scripts/occd_utils.py db-update-source-status \
+     python scripts/occd_utils.py db-update-task-status \
        --repo {repo_path} --task {task_id} --status failed --session-key {session_key} --note "失败摘要"
 ```
 

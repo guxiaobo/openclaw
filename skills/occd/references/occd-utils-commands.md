@@ -81,7 +81,7 @@ python scripts/occd_utils.py git-pull --repo ~/projects/github-myapp --ff-only
 
 ### scan-repos
 
-扫描 work_dir 下所有 `github-*` 仓库中的 `occd/req/` 文件，与 DB 比对后返回需要处理的需求。
+扫描 work_dir 下所有 `github-*` 仓库中的 `occd/req/` 文件；对每个 requirement 维护 `processed_commit -> latest_commit` 的未处理区间，并按最新 commit 时间输出待处理需求。
 
 ```bash
 python scripts/occd_utils.py scan-repos --work-dir ~/projects
@@ -120,7 +120,9 @@ python scripts/occd_utils.py db-update-req-status \
 状态值：
 
 - `new`
+- `preflight`
 - `reviewing`
+- `blocked`
 - `decomposed`
 - `done`
 - `failed`
@@ -140,6 +142,41 @@ python scripts/occd_utils.py db-list-pending-reqs --repo <repo>
 ---
 
 ## 5. review / source 写入
+
+### req-history
+
+读取某个 requirement 从已处理基线到当前最新版本的提交区间。
+
+```bash
+python scripts/occd_utils.py req-history \
+  --repo <repo> \
+  --req feature.md \
+  --from-commit <processed_commit> \
+  --to-commit <latest_commit>
+```
+
+### db-mark-req-processed
+
+当主代理已经基于当前最新区间完成 review 或 task 落地后，标记该区间为已处理。
+
+```bash
+python scripts/occd_utils.py db-mark-req-processed \
+  --repo <repo> \
+  --req-id github-myapp:feature.md \
+  --status decomposed
+```
+
+### db-block-req
+
+当 requirement 因跨需求冲突被暂停时，标记为 `blocked`。
+
+```bash
+python scripts/occd_utils.py db-block-req \
+  --repo <repo> \
+  --req-id github-myapp:feature.md \
+  --reason "与 feature-auth.md 的返回结构冲突" \
+  --conflict-group cg-001
+```
 
 ### write-review
 
@@ -163,7 +200,7 @@ python scripts/occd_utils.py write-tasks \
   --req feature.md \
   --tasks '[
     {
-      "id": "req001-001-001-coding",
+      "id": "feature-calc-001-001-coding",
       "type": "coding",
       "summary": "实现登录接口",
       "details": "POST /api/login，返回 JWT token",
@@ -178,39 +215,39 @@ python scripts/occd_utils.py write-tasks \
 `task.id` 必须匹配：
 
 ```text
-reqZZZ-XXX-YYY-coding
-reqZZZ-XXX-YYY-test-write
-reqZZZ-XXX-YYY-test-run
+<req-file-stem>-XXX-YYY-coding
+<req-file-stem>-XXX-YYY-test-write
+<req-file-stem>-XXX-YYY-test-run
 ```
 
 ---
 
-## 6. source / execution 状态管理
+## 6. source / report 状态管理
 
-### db-update-source-status
+### db-update-task-status
 
 主代理与子代理都可以调用，但子代理必须带 `--session-key`。
 
 ```bash
-python scripts/occd_utils.py db-update-source-status \
+python scripts/occd_utils.py db-update-task-status \
   --repo <repo> \
-  --task req001-001-001-coding \
+  --task feature-calc-001-001-coding \
   --status spawned \
   --session-key sess_xxx
 ```
 
 ```bash
-python scripts/occd_utils.py db-update-source-status \
+python scripts/occd_utils.py db-update-task-status \
   --repo <repo> \
-  --task req001-001-001-coding \
+  --task feature-calc-001-001-coding \
   --status running \
   --session-key sess_xxx
 ```
 
 ```bash
-python scripts/occd_utils.py db-update-source-status \
+python scripts/occd_utils.py db-update-task-status \
   --repo <repo> \
-  --task req001-001-001-coding \
+  --task feature-calc-001-001-coding \
   --status done \
   --session-key sess_xxx
 ```
@@ -223,21 +260,21 @@ python scripts/occd_utils.py db-update-source-status \
 - `done`
 - `failed`
 
-### db-list-sources-by-xxx
+### db-list-tasks-by-xxx
 
 ```bash
-python scripts/occd_utils.py db-list-sources-by-xxx --repo <repo> --xxx 001
+python scripts/occd_utils.py db-list-tasks-by-xxx --repo <repo> --xxx 001
 ```
 
-### db-add-execution
+### db-add-report
 
 登记一次执行记录。支持传真实开始/结束时间。
 
 ```bash
-python scripts/occd_utils.py db-add-execution \
+python scripts/occd_utils.py db-add-report \
   --repo <repo> \
-  --task req001-001-001-coding \
-  --report-file report-req001-001-001-coding-20260309T094500.md \
+  --task feature-calc-001-001-coding \
+  --report-file report-feature-calc-001-001-coding-20260309T094500.md \
   --outcome success \
   --summary "实现登录接口与单测" \
   --session-key sess_xxx \
@@ -245,10 +282,10 @@ python scripts/occd_utils.py db-add-execution \
   --finished-at 2026-03-09T10:12:33+08:00
 ```
 
-### db-list-executions
+### db-list-reports
 
 ```bash
-python scripts/occd_utils.py db-list-executions --repo <repo> --task req001-001-001-coding
+python scripts/occd_utils.py db-list-reports --repo <repo> --task feature-calc-001-001-coding
 ```
 
 ### db-summary
@@ -271,7 +308,7 @@ python scripts/occd_utils.py db-summary --work-dir ~/projects
 ```bash
 python scripts/occd_utils.py create-worktree \
   --repo <repo> \
-  --branch req001-001-001-coding \
+  --branch feature-calc-001-001-coding \
   --reuse-if-exists
 ```
 
@@ -282,7 +319,7 @@ python scripts/occd_utils.py create-worktree \
 ```bash
 python scripts/occd_utils.py remove-worktree \
   --repo <repo> \
-  --branch req001-001-001-coding \
+  --branch feature-calc-001-001-coding \
   --delete-branch \
   --base-branch main
 ```
@@ -354,12 +391,12 @@ python scripts/occd_utils.py build-opencode-command \
 
 ### latest-report
 
-根据 `executions` 表返回某个 task 的最新报告，而不是扫目录。
+根据 reports 表返回某个 task 的最新报告，而不是扫目录。
 
 ```bash
 python scripts/occd_utils.py latest-report \
   --repo <repo> \
-  --task req001-001-001-coding
+  --task feature-calc-001-001-coding
 ```
 
 ---

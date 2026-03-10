@@ -8,7 +8,7 @@ report 文件只是补充上下文，不负责定义任务状态。
 
 - 任务状态：看 SQLite
 - 报告内容：看 `report/report-*.md`
-- 报告定位：优先通过 executions 表，不要靠目录扫描瞎猜
+- 报告定位：优先通过 reports 表记录，不要靠目录扫描瞎猜
 
 ---
 
@@ -17,7 +17,7 @@ report 文件只是补充上下文，不负责定义任务状态。
 ```bash
 python scripts/occd_utils.py latest-report \
   --repo <repo> \
-  --task req001-001-001-coding
+  --task feature-calc-001-001-coding
 ```
 
 返回：

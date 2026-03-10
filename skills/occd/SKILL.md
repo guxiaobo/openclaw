@@ -11,11 +11,12 @@ description: OCCD (OpenCode Continuous Developing) - 多仓库持续开发编排
 
 1. 拉取仓库与扫描需求
 2. 由主代理使用大语言模型判断需求是否明确
-3. 由主代理使用大语言模型生成 review 或拆分 task 任务
-4. 对当前串行批次并发启动子代理
-5. 子代理委托 OpenCode 完成实际编码 / 测试编写 / 必要修复
-6. 读取报告并推进下一步
-7. 合并、测试、提交、推送
+3. 对同一轮发现的多个 new requirement 先做批量 preflight，判断是否存在跨需求冲突
+4. 由主代理基于 `processed_commit -> latest_commit` 的完整提交区间生成 review 或拆分 task 任务
+5. 对当前串行批次并发启动子代理
+6. 子代理委托 OpenCode 完成实际编码 / 测试编写 / 必要修复
+7. 读取报告并推进下一步
+8. 合并、测试、提交、推送
 
 ## 先读什么
 
@@ -26,13 +27,14 @@ description: OCCD (OpenCode Continuous Developing) - 多仓库持续开发编排
 - 主代理需求分析提示：`references/llm-analysis-prompt.md`
 - 子代理 prompt 模板：`references/subagent-prompt-template.md`
 - OpenCode 命令指南：`references/opencode-command-guide.md`
-- source 任务格式：`references/source-task-template.md`
+- task 任务格式：`references/source-task-template.md`
 - 报告格式：`references/task-report-template.md`
 - 报告分诊：`references/report-triage-guide.md`
 - 报告定位：`references/report-location-guide.md`
 - 重试策略：`references/retry-policy.md`
 - finalize 清单：`references/finalize-checklist.md`
 - end-to-end 演练：`references/end-to-end-demo.md`
+- 自动化场景测试脚本：`scripts/occd_e2e_scenarios.py`
 - review 格式：`references/review-template.md`
 - DB schema：`references/occd-db-schema.sql`
 
@@ -107,8 +109,9 @@ python scripts/occd_controller.py repo-status --repo ~/projects/github-myapp
 
 controller 不会替你做 agent 决策，只会告诉你：
 
-- 哪个需求要分析
-- 哪个 review 要检查回复
+- 哪一批 new requirement 需要先做 preflight
+- 哪个需求要基于 commit 区间分析
+- 哪个 review / blocked requirement 要检查回复
 - 哪个串行批次可以 spawn
 - 哪个需求可以 finalize
 
@@ -132,9 +135,9 @@ controller 不会替你做 agent 决策，只会告诉你：
 
 拆分任务时统一使用：
 
-- `reqZZZ-XXX-YYY-coding`
-- `reqZZZ-XXX-YYY-test-write`
-- `reqZZZ-XXX-YYY-test-run`
+- `<req-file-stem>-XXX-YYY-coding`
+- `<req-file-stem>-XXX-YYY-test-write`
+- `<req-file-stem>-XXX-YYY-test-run`
 
 规则：
 
@@ -169,7 +172,7 @@ python scripts/occd_utils.py check-new-commit \
 向每个子代理提供：
 
 - 仓库路径
-- source 任务文件路径
+- task 任务文件路径
 - worktree 分支名
 - 结果报告路径规范
 - 必须调用的状态命令
@@ -177,7 +180,7 @@ python scripts/occd_utils.py check-new-commit \
 示例骨架：
 
 ```text
-你是 OCCD 执行子代理，请完成一个 source 任务。
+你是 OCCD 执行子代理，请完成一个 task 任务。
 
 仓库路径: <repo_path>
 任务文件: <repo_path>/occd/task/<task_id>.md
@@ -185,7 +188,7 @@ python scripts/occd_utils.py check-new-commit \
 要求：
 1. 读取任务文件
 2. 立即调用：
-   python scripts/occd_utils.py db-update-source-status \
+   python scripts/occd_utils.py db-update-task-status \
      --repo <repo_path> --task <task_id> --status running --session-key <session_key>
 3. 如果是 coding / test-write：
    - create-worktree --reuse-if-exists
@@ -193,8 +196,8 @@ python scripts/occd_utils.py check-new-commit \
 4. 如果是 test-run：
    - 直接调用 run-tests
 5. 写结构化报告到 occd/report/report-<task_id>-<timestamp>.md
-6. 调用 db-add-execution 登记本次执行
-7. 再调用 db-update-source-status 标记 done / failed
+6. 调用 db-add-report 登记本次执行
+7. 再调用 db-update-task-status 标记 done / failed
 ```
 
 ## 子代理任务类型约定
@@ -244,7 +247,7 @@ python scripts/occd_utils.py check-new-commit \
 ```bash
 python scripts/occd_utils.py create-worktree \
   --repo <repo_path> \
-  --branch req001-001-001-coding \
+  --branch feature-calc-001-001-coding \
   --reuse-if-exists
 ```
 
@@ -310,9 +313,9 @@ python scripts/occd_utils.py commit-push \
 8. 收尾时读 `references/finalize-checklist.md`
 9. 需要完整演练时读 `references/end-to-end-demo.md`
 
-### 子代理执行 source 任务时
+### 子代理执行 task 任务时
 
-1. 读 source 任务文件本身
+1. 读 task 任务文件本身
 2. 再读 `references/task-report-template.md`
 3. 如主代理 prompt 未写清，再参考 `references/subagent-prompt-template.md`
 

@@ -33,7 +33,7 @@
     "decision": "tasks",
     "tasks": [
       {
-        "id": "reqZZZ-XXX-YYY-coding|test-write|test-run",
+        "id": "<req-file-stem>-XXX-YYY-coding|test-write|test-run",
         "type": "coding|test-write|test-run",
         "summary": "一句话说明",
         "details": "详细要求",

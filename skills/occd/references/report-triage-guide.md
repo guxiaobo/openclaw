@@ -8,8 +8,8 @@
 
 动作：
 
-1. 确认 source 状态为 `done`
-2. 记录 execution
+1. 确认 task 状态为 `done`
+2. 记录 report
 3. 若当前 `XXX` 已全 done：推进到下一批次
 4. 若已是最后批次：进入 finalize
 
@@ -71,7 +71,7 @@
 动作：
 
 - 不自动重试 test-run
-- 让主代理补充明确测试命令，或新增 source 任务
+- 让主代理补充明确测试命令，或新增 task 任务
 
 #### D. 需求问题
 

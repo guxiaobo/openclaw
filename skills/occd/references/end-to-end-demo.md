@@ -2,6 +2,21 @@
 
 这是一份从 req 到 review / task / spawn / report / finalize 的主代理演练示例。
 
+## 自动化回归
+
+如需一次性跑完标准回归场景，可直接执行：
+
+```bash
+python scripts/occd_e2e_scenarios.py --base-dir ~/tmp/occd-e2e
+```
+
+当前脚本覆盖：
+
+- 场景 1：同一 req 文件存在多个未处理 commit，按 commit 区间累计分析
+- 场景 2：同一轮出现多个 new requirement，controller 返回 `preflight_batch`
+- 场景 3：blocked requirement 在同文件出现新 commit 后重新进入 analyze
+- 场景 4：write-review / write-tasks 会把当前 commit 区间标记为已处理
+
 ---
 
 ## 场景
@@ -100,7 +115,7 @@ python scripts/occd_utils.py write-review \
 ```json
 [
   {
-    "id": "req001-001-001-coding",
+    "id": "feature-calc-001-001-coding",
     "type": "coding",
     "summary": "实现登录接口",
     "details": "新增 POST /api/login，校验用户名密码并返回 token",
@@ -110,23 +125,23 @@ python scripts/occd_utils.py write-review \
     "notes": "优先复用现有用户查询逻辑"
   },
   {
-    "id": "req001-002-001-test-write",
+    "id": "feature-calc-002-001-test-write",
     "type": "test-write",
     "summary": "为登录接口补充测试",
     "details": "覆盖正常登录与错误密码场景",
     "constraints": "沿用现有测试框架",
     "acceptance": "- [ ] 正常登录用例通过\n- [ ] 错误密码用例通过",
-    "depends_on": ["req001-001-001-coding"],
+    "depends_on": ["feature-calc-001-001-coding"],
     "notes": "测试文件命名遵循仓库规范"
   },
   {
-    "id": "req001-003-001-test-run",
+    "id": "feature-calc-003-001-test-run",
     "type": "test-run",
     "summary": "运行登录相关测试",
     "details": "执行项目测试并确认回归通过",
     "constraints": "使用仓库已有测试命令",
     "acceptance": "- [ ] 测试通过",
-    "depends_on": ["req001-002-001-test-write"],
+    "depends_on": ["feature-calc-002-001-test-write"],
     "notes": "若未识别测试框架，不得视为成功"
   }
 ]
@@ -172,18 +187,18 @@ python scripts/occd_utils.py build-opencode-command \
 - 先标记 `running`
 - coding / test-write 必须委托 OpenCode
 - 完成后写 `occd/report/report-*.md`
-- 再登记 execution 与最终状态
+- 再登记 report 与最终状态
 
 ---
 
 ## Step 6. 主代理读取 report，但状态以 SQLite 为准
 
-主代理可以通过 execution 记录定位最新报告：
+主代理可以通过 report 记录定位最新报告：
 
 ```bash
 python scripts/occd_utils.py latest-report \
   --repo ~/projects/github-myapp \
-  --task req001-001-001-coding
+  --task feature-calc-001-001-coding
 ```
 
 然后：

@@ -1,6 +1,6 @@
 # 子任务 Prompt 模板
 
-# 文件名：reqZZZ-XXX-YYY-{type}.md
+# 文件名：<req-file-stem>-XXX-YYY-{type}.md
 
 # 位置：occd/task/
 
@@ -10,7 +10,7 @@
 
 ---
 
-task_id: req001-001-001-coding # 任务唯一 ID
+task_id: feature-calc-001-001-coding # 任务唯一 ID
 task_type: coding # coding | test-write | test-run
 req_file: feature.md # 来源需求文件
 xxx: "001" # 串行批次（同批次内任务串行）

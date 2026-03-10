@@ -5,7 +5,7 @@ occd_controller.py - OCCD 编排辅助脚本
 定位：给 OpenClaw 主代理提供“下一步该做什么”的结构化输出；
 真正的 sessions_spawn / 任务分析 / 文本判断仍由主代理完成。
 
-状态判断只以 SQLite（occd.db）中的 requirement/source/execution 记录为准，
+状态判断只以 SQLite（occd.db）中的 requirement/task/report 记录为准，
 不扫描 report 目录来推断子任务状态。
 """
 
@@ -51,38 +51,64 @@ def next_batch_for_repo(repo: Path) -> dict[str, Any]:
     if not requirements:
         return {"repo": str(repo), "action": "idle"}
 
+    new_reqs = [r for r in requirements if r["status"] == "new"]
+    if len(new_reqs) > 1:
+        new_reqs = sorted(new_reqs, key=lambda r: ((r.get("latest_commit_at") or 0), r["filename"]))
+        return {
+            "repo": str(repo),
+            "action": "preflight_batch",
+            "requirements": [
+                {
+                    "req_id": r["id"],
+                    "req_file": r["filename"],
+                    "latest_commit": r.get("latest_commit"),
+                    "latest_commit_at": r.get("latest_commit_at"),
+                    "pending_from_commit": r.get("pending_from_commit"),
+                    "pending_to_commit": r.get("pending_to_commit"),
+                    "pending_commit_count": r.get("pending_commit_count", 0),
+                }
+                for r in new_reqs
+            ],
+        }
+    if len(new_reqs) == 1:
+        req = new_reqs[0]
+        return {
+            "repo": str(repo),
+            "action": "analyze_requirement",
+            "req_id": req["id"],
+            "req_file": req["filename"],
+            "latest_commit": req.get("latest_commit"),
+            "pending_from_commit": req.get("pending_from_commit"),
+            "pending_to_commit": req.get("pending_to_commit"),
+            "pending_commit_count": req.get("pending_commit_count", 0),
+        }
+
     for req in requirements:
         req_id = req["id"]
         status = req["status"]
-        if status == "new":
-            return {
-                "repo": str(repo),
-                "action": "analyze_requirement",
-                "req_id": req_id,
-                "req_file": req["filename"],
-            }
-        if status == "reviewing":
+        if status in {"reviewing", "blocked"}:
             return {
                 "repo": str(repo),
                 "action": "check_review_reply",
                 "req_id": req_id,
                 "req_file": req["filename"],
                 "last_req_commit": req.get("last_req_commit"),
+                "status": status,
             }
         if status == "decomposed":
             detail = requirement_detail(repo, req_id)
-            sources = detail.get("sources", [])
-            if not sources:
+            tasks = detail.get("tasks", [])
+            if not tasks:
                 return {
                     "repo": str(repo),
                     "action": "analyze_requirement",
                     "req_id": req_id,
                     "req_file": req["filename"],
-                    "reason": "decomposed_without_sources",
+                    "reason": "decomposed_without_tasks",
                 }
-            batches = sorted({s["xxx"] for s in sources})
+            batches = sorted({s["xxx"] for s in tasks})
             for xxx in batches:
-                batch = [s for s in sources if s["xxx"] == xxx]
+                batch = [s for s in tasks if s["xxx"] == xxx]
                 statuses = {s["status"] for s in batch}
                 if any(s in {"pending", "failed"} for s in statuses) and not any(s in {"running", "spawned"} for s in statuses):
                     return {
@@ -110,7 +136,7 @@ def next_batch_for_repo(repo: Path) -> dict[str, Any]:
                 "action": "finalize_requirement",
                 "req_id": req_id,
                 "req_file": req["filename"],
-                "sources_total": len(sources),
+                "tasks_total": len(tasks),
             }
 
     return {"repo": str(repo), "action": "idle"}
@@ -139,8 +165,8 @@ def cmd_poll_plan(args):
 def cmd_batch_ready(args):
     repo = Path(args.repo)
     detail = requirement_detail(repo, args.req_id)
-    sources = detail.get("sources", [])
-    batch = [s for s in sources if s["xxx"] == args.xxx]
+    tasks = detail.get("tasks", [])
+    batch = [s for s in tasks if s["xxx"] == args.xxx]
     statuses = {s["status"] for s in batch}
     ready = bool(batch) and any(s in {"pending", "failed"} for s in statuses) and not any(s in {"running", "spawned"} for s in statuses)
     output({
@@ -156,24 +182,24 @@ def cmd_batch_ready(args):
 def cmd_finalize_ready(args):
     repo = Path(args.repo)
     detail = requirement_detail(repo, args.req_id)
-    sources = detail.get("sources", [])
-    all_done = bool(sources) and all(s["status"] == "done" for s in sources)
-    batches = sorted({s["xxx"] for s in sources})
+    tasks = detail.get("tasks", [])
+    all_done = bool(tasks) and all(s["status"] == "done" for s in tasks)
+    batches = sorted({s["xxx"] for s in tasks})
     output({
         "repo": str(repo),
         "req_id": args.req_id,
         "ready": all_done,
-        "sources_total": len(sources),
+        "tasks_total": len(tasks),
         "batches": batches,
-        "not_done": [s["id"] for s in sources if s["status"] != "done"],
+        "not_done": [s["id"] for s in tasks if s["status"] != "done"],
     })
 
 
 def cmd_retry_plan(args):
     repo = Path(args.repo)
     detail = requirement_detail(repo, args.req_id)
-    sources = detail.get("sources", [])
-    failed = [s for s in sources if s["status"] == "failed"]
+    tasks = detail.get("tasks", [])
+    failed = [s for s in tasks if s["status"] == "failed"]
     output({
         "repo": str(repo),
         "req_id": args.req_id,

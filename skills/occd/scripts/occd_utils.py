@@ -20,11 +20,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-REQ_STATUS = {"new", "reviewing", "decomposed", "done", "failed"}
-SOURCE_STATUS = {"pending", "spawned", "running", "done", "failed"}
+REQ_STATUS = {"new", "preflight", "reviewing", "blocked", "decomposed", "done", "failed"}
+TASK_STATUS = {"pending", "spawned", "running", "done", "failed"}
 OUTCOMES = {"success", "failure", "partial"}
 TASK_TYPES = {"coding", "test-write", "test-run"}
-TASK_ID_RE = re.compile(r"^req(\d+)-(\d+)-(\d+)-(coding|test-write|test-run)$")
+TASK_ID_RE = re.compile(r"^([a-z0-9][a-z0-9-]*)-(\d+)-(\d+)-(coding|test-write|test-run)$")
 DEFAULT_CONFIG_PATH = Path.home() / ".openclaw" / "occd-config.json"
 LOCK_DIRNAME = ".locks"
 
@@ -33,14 +33,23 @@ PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS requirements (
-    id              TEXT PRIMARY KEY,
-    filename        TEXT NOT NULL,
-    content_hash    TEXT NOT NULL,
-    status          TEXT NOT NULL DEFAULT 'new',
-    review_rounds   INTEGER NOT NULL DEFAULT 0,
-    last_req_commit TEXT,
-    created_at      INTEGER NOT NULL,
-    updated_at      INTEGER NOT NULL
+    id                   TEXT PRIMARY KEY,
+    filename             TEXT NOT NULL,
+    content_hash         TEXT NOT NULL,
+    status               TEXT NOT NULL DEFAULT 'new',
+    review_rounds        INTEGER NOT NULL DEFAULT 0,
+    last_req_commit      TEXT,
+    processed_commit     TEXT,
+    processed_commit_at  INTEGER,
+    latest_commit        TEXT,
+    latest_commit_at     INTEGER,
+    pending_from_commit  TEXT,
+    pending_to_commit    TEXT,
+    pending_commit_count INTEGER NOT NULL DEFAULT 0,
+    blocked_reason       TEXT,
+    conflict_group_id    TEXT,
+    created_at           INTEGER NOT NULL,
+    updated_at           INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS reviews (
@@ -51,7 +60,7 @@ CREATE TABLE IF NOT EXISTS reviews (
     resolved_at INTEGER
 );
 
-CREATE TABLE IF NOT EXISTS sources (
+CREATE TABLE IF NOT EXISTS tasks (
     id          TEXT PRIMARY KEY,
     req_id      TEXT NOT NULL REFERENCES requirements(id),
     filename    TEXT NOT NULL,
@@ -66,9 +75,9 @@ CREATE TABLE IF NOT EXISTS sources (
     updated_at  INTEGER NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS executions (
+CREATE TABLE IF NOT EXISTS reports (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    source_id   TEXT NOT NULL REFERENCES sources(id),
+    task_id     TEXT NOT NULL REFERENCES tasks(id),
     report_file TEXT NOT NULL,
     session_key TEXT,
     outcome     TEXT NOT NULL,
@@ -88,13 +97,15 @@ CREATE TABLE IF NOT EXISTS task_events (
     created_at  INTEGER NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_requirements_status   ON requirements(status);
-CREATE INDEX IF NOT EXISTS idx_sources_req_id        ON sources(req_id);
-CREATE INDEX IF NOT EXISTS idx_sources_status        ON sources(status);
-CREATE INDEX IF NOT EXISTS idx_sources_xxx           ON sources(xxx);
-CREATE INDEX IF NOT EXISTS idx_executions_source_id  ON executions(source_id);
-CREATE INDEX IF NOT EXISTS idx_task_events_entity    ON task_events(entity_type, entity_id);
-CREATE INDEX IF NOT EXISTS idx_task_events_time      ON task_events(created_at);
+CREATE INDEX IF NOT EXISTS idx_requirements_status       ON requirements(status);
+CREATE INDEX IF NOT EXISTS idx_requirements_latest_time  ON requirements(latest_commit_at);
+CREATE INDEX IF NOT EXISTS idx_requirements_pending_time ON requirements(pending_commit_count, latest_commit_at);
+CREATE INDEX IF NOT EXISTS idx_tasks_req_id              ON tasks(req_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_status              ON tasks(status);
+CREATE INDEX IF NOT EXISTS idx_tasks_xxx                 ON tasks(xxx);
+CREATE INDEX IF NOT EXISTS idx_reports_task_id           ON reports(task_id);
+CREATE INDEX IF NOT EXISTS idx_task_events_entity        ON task_events(entity_type, entity_id);
+CREATE INDEX IF NOT EXISTS idx_task_events_time          ON task_events(created_at);
 """
 
 
@@ -138,15 +149,21 @@ def ensure_status(value: str, allowed: set[str], field: str):
         fail(f"invalid {field}: {value}", extra={"allowed": sorted(allowed)})
 
 
+def normalize_req_prefix(req_name: str) -> str:
+    stem = Path(req_name).stem.lower()
+    slug = re.sub(r"[^a-z0-9]+", "-", stem).strip("-")
+    return slug or "req"
+
+
 def parse_task_id(task_id: str) -> dict[str, str]:
     match = TASK_ID_RE.match(task_id)
     if not match:
         fail(
             f"invalid task id: {task_id}",
-            extra={"expected": "reqZZZ-XXX-YYY-coding|test-write|test-run"},
+            extra={"expected": "<req-file-stem>-XXX-YYY-coding|test-write|test-run"},
         )
-    req_seq, xxx, yyy, task_type = match.groups()
-    return {"req_seq": req_seq, "xxx": xxx, "yyy": yyy, "task_type": task_type}
+    req_prefix, xxx, yyy, task_type = match.groups()
+    return {"req_prefix": req_prefix, "xxx": xxx, "yyy": yyy, "task_type": task_type}
 
 
 def repo_lock_path(repo: Path) -> Path:
@@ -166,6 +183,50 @@ def get_conn(repo: Path) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode = WAL")
     return conn
 
+
+
+def git_file_latest_commit(repo: Path, relpath: str) -> tuple[str | None, int | None]:
+    r = run_git(["log", "-1", "--format=%H|%ct", "--", relpath], cwd=repo)
+    value = r.stdout.strip()
+    if not value:
+        return None, None
+    commit, ts = value.split("|", 1)
+    return commit, int(ts) * 1000
+
+
+def git_file_commit_count(repo: Path, relpath: str, from_commit: str | None, to_commit: str | None) -> int:
+    if not to_commit:
+        return 0
+    if from_commit:
+        args = ["rev-list", "--count", f"{from_commit}..{to_commit}", "--", relpath]
+    else:
+        args = ["rev-list", "--count", to_commit, "--", relpath]
+    r = run_git(args, cwd=repo)
+    out = r.stdout.strip()
+    return int(out or "0")
+
+
+def mark_req_processed(conn: sqlite3.Connection, req_id: str, commit: str | None, commit_at: int | None):
+    conn.execute(
+        "UPDATE requirements SET processed_commit=?, processed_commit_at=?, pending_from_commit=NULL, pending_to_commit=NULL, pending_commit_count=0, blocked_reason=NULL, conflict_group_id=NULL, updated_at=? WHERE id=?",
+        (commit, commit_at, ts_ms(), req_id),
+    )
+
+
+def requirement_pending_summary(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+    item = dict(row)
+    return {
+        "req_id": item["id"],
+        "req_file": item["filename"],
+        "status": item["status"],
+        "latest_commit": item.get("latest_commit"),
+        "latest_commit_at": item.get("latest_commit_at"),
+        "pending_from_commit": item.get("pending_from_commit"),
+        "pending_to_commit": item.get("pending_to_commit"),
+        "pending_commit_count": item.get("pending_commit_count", 0),
+        "blocked_reason": item.get("blocked_reason"),
+        "conflict_group_id": item.get("conflict_group_id"),
+    }
 
 def init_db(repo: Path):
     conn = get_conn(repo)
@@ -326,6 +387,11 @@ def cmd_db_init(args):
     ensure_repo(repo)
     for name in ("req", "task", "report", "review", "logs"):
         (repo / "occd" / name).mkdir(parents=True, exist_ok=True)
+    tests_dir = repo / "tests"
+    tests_dir.mkdir(parents=True, exist_ok=True)
+    gitkeep = tests_dir / ".gitkeep"
+    if not gitkeep.exists():
+        gitkeep.write_text("", encoding="utf-8")
     init_db(repo)
     ga = repo / ".gitattributes"
     line = "occd/occd.db binary\n"
@@ -378,40 +444,47 @@ def cmd_scan_repos(args):
         for f in sorted(req_dir.iterdir()):
             if f.suffix not in (".md", ".txt"):
                 continue
+            relpath = f"occd/req/{f.name}"
             req_id = make_req_id(repo, f.name)
             content_hash = file_sha256(f)
-            row = conn.execute("SELECT status, content_hash FROM requirements WHERE id=?", (req_id,)).fetchone()
+            latest_commit, latest_commit_at = git_file_latest_commit(repo, relpath)
+            row = conn.execute("SELECT * FROM requirements WHERE id=?", (req_id,)).fetchone()
+            now = ts_ms()
             action = None
-            if row:
-                if row["status"] not in ("new", "failed") and row["content_hash"] == content_hash:
-                    continue
-                action = "hash_changed" if row["content_hash"] != content_hash else "retry"
-                if row["content_hash"] != content_hash:
-                    conn.execute(
-                        "UPDATE requirements SET content_hash=?,status='new',updated_at=? WHERE id=?",
-                        (content_hash, ts_ms(), req_id),
-                    )
-                    log_event(conn, "req", req_id, row["status"], "new", note="content_hash changed")
-                    conn.commit()
-            else:
-                now = ts_ms()
+            if row is None:
+                pending_count = git_file_commit_count(repo, relpath, None, latest_commit)
                 conn.execute(
-                    "INSERT INTO requirements(id,filename,content_hash,status,review_rounds,created_at,updated_at) VALUES(?,?,?,'new',0,?,?)",
-                    (req_id, f.name, content_hash, now, now),
+                    "INSERT INTO requirements(id,filename,content_hash,status,review_rounds,last_req_commit,processed_commit,processed_commit_at,latest_commit,latest_commit_at,pending_from_commit,pending_to_commit,pending_commit_count,blocked_reason,conflict_group_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (req_id, f.name, content_hash, 'new', 0, None, None, None, latest_commit, latest_commit_at, None, latest_commit, pending_count, None, None, now, now),
                 )
-                log_event(conn, "req", req_id, None, "new")
-                conn.commit()
-                action = "new"
-            row2 = conn.execute("SELECT status FROM requirements WHERE id=?", (req_id,)).fetchone()
-            result.append({
-                "repo": str(repo),
-                "repo_name": repo.name,
-                "req": f.name,
-                "req_id": req_id,
-                "status": row2["status"],
-                "action": action,
-            })
+                log_event(conn, "req", req_id, None, "new", note="new_file")
+                action = "new_file"
+            else:
+                prev_status = row["status"]
+                processed_commit = row["processed_commit"]
+                prev_latest = row["latest_commit"]
+                pending_to = row["pending_to_commit"]
+                has_new_commit = latest_commit != prev_latest
+                has_new_content = content_hash != row["content_hash"]
+                if has_new_commit or has_new_content:
+                    pending_from = processed_commit
+                    next_pending_to = latest_commit
+                    pending_count = git_file_commit_count(repo, relpath, pending_from, next_pending_to)
+                    conn.execute(
+                        "UPDATE requirements SET content_hash=?, status='new', latest_commit=?, latest_commit_at=?, pending_from_commit=?, pending_to_commit=?, pending_commit_count=?, blocked_reason=NULL, conflict_group_id=NULL, updated_at=? WHERE id=?",
+                        (content_hash, latest_commit, latest_commit_at, pending_from, next_pending_to, pending_count, now, req_id),
+                    )
+                    action = "new_commit" if has_new_commit else "content_changed"
+                    log_event(conn, "req", req_id, prev_status, "new", note=action)
+                else:
+                    continue
+            conn.commit()
+            fresh = conn.execute("SELECT * FROM requirements WHERE id=?", (req_id,)).fetchone()
+            payload = requirement_pending_summary(fresh)
+            payload.update({"repo": str(repo), "repo_name": repo.name, "req": f.name, "action": action})
+            result.append(payload)
         conn.close()
+    result.sort(key=lambda x: ((x.get("latest_commit_at") or 0), x["req"]))
     output({"success": True, "repos": result})
 
 
@@ -439,24 +512,28 @@ def cmd_db_upsert_req(args):
     req_file = repo / "occd" / "req" / args.filename
     if not req_file.exists():
         fail(f"requirement file not found: {req_file}")
+    relpath = f"occd/req/{args.filename}"
     req_id = make_req_id(repo, args.filename)
     content_hash = file_sha256(req_file)
+    latest_commit, latest_commit_at = git_file_latest_commit(repo, relpath)
     conn = get_conn(repo)
-    row = conn.execute("SELECT status, content_hash FROM requirements WHERE id=?", (req_id,)).fetchone()
+    row = conn.execute("SELECT * FROM requirements WHERE id=?", (req_id,)).fetchone()
     now = ts_ms()
     if row is None:
+        pending_count = git_file_commit_count(repo, relpath, None, latest_commit)
         conn.execute(
-            "INSERT INTO requirements(id,filename,content_hash,status,review_rounds,created_at,updated_at) VALUES(?,?,?,'new',0,?,?)",
-            (req_id, args.filename, content_hash, now, now),
+            "INSERT INTO requirements(id,filename,content_hash,status,review_rounds,last_req_commit,processed_commit,processed_commit_at,latest_commit,latest_commit_at,pending_from_commit,pending_to_commit,pending_commit_count,blocked_reason,conflict_group_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (req_id, args.filename, content_hash, 'new', 0, None, None, None, latest_commit, latest_commit_at, None, latest_commit, pending_count, None, None, now, now),
         )
         log_event(conn, "req", req_id, None, "new")
         action = "inserted"
-    elif row["content_hash"] != content_hash:
+    elif row["latest_commit"] != latest_commit or row["content_hash"] != content_hash:
+        pending_count = git_file_commit_count(repo, relpath, row["processed_commit"], latest_commit)
         conn.execute(
-            "UPDATE requirements SET content_hash=?,status='new',updated_at=? WHERE id=?",
-            (content_hash, now, req_id),
+            "UPDATE requirements SET content_hash=?, status='new', latest_commit=?, latest_commit_at=?, pending_from_commit=?, pending_to_commit=?, pending_commit_count=?, blocked_reason=NULL, conflict_group_id=NULL, updated_at=? WHERE id=?",
+            (content_hash, latest_commit, latest_commit_at, row["processed_commit"], latest_commit, pending_count, now, req_id),
         )
-        log_event(conn, "req", req_id, row["status"], "new", note="content_hash changed")
+        log_event(conn, "req", req_id, row["status"], "new", note="upsert refreshed")
         action = "updated"
     else:
         action = "skipped"
@@ -487,17 +564,87 @@ def cmd_db_get_req(args):
     if not row:
         fail(f"requirement not found: {args.req_id}")
     reviews = [dict(r) for r in conn.execute("SELECT * FROM reviews WHERE req_id=? ORDER BY created_at", (args.req_id,))]
-    sources = [dict(s) for s in conn.execute("SELECT * FROM sources WHERE req_id=? ORDER BY xxx, yyy", (args.req_id,))]
+    tasks = [dict(s) for s in conn.execute("SELECT * FROM tasks WHERE req_id=? ORDER BY xxx, yyy", (args.req_id,))]
     conn.close()
-    output({"success": True, "req": dict(row), "reviews": reviews, "sources": sources})
+    output({"success": True, "req": dict(row), "reviews": reviews, "tasks": tasks})
 
 
 def cmd_db_list_pending_reqs(args):
     repo = Path(args.repo)
     conn = get_conn(repo)
-    rows = conn.execute("SELECT * FROM requirements WHERE status IN ('new','reviewing','decomposed') ORDER BY created_at").fetchall()
+    rows = conn.execute("SELECT * FROM requirements WHERE status IN ('new','preflight','reviewing','blocked','decomposed') ORDER BY COALESCE(latest_commit_at, created_at), filename").fetchall()
     conn.close()
     output({"success": True, "requirements": [dict(r) for r in rows]})
+
+
+def cmd_req_history(args):
+    repo = Path(args.repo)
+    relpath = f"occd/req/{args.req}"
+    req_path = repo / relpath
+    if not req_path.exists():
+        fail(f"requirement file not found: {req_path}")
+    from_commit = args.from_commit or None
+    to_commit = args.to_commit or git_file_latest_commit(repo, relpath)[0]
+    if from_commit:
+        revspec = f"{from_commit}..{to_commit}"
+        log_cmd = ["log", "--reverse", "--format=%H|%ct|%s", revspec, "--", relpath]
+        diff_cmd = ["diff", revspec, "--", relpath]
+    else:
+        log_cmd = ["log", "--reverse", "--format=%H|%ct|%s", to_commit, "--", relpath]
+        diff_cmd = ["show", to_commit, "--", relpath]
+    commits = []
+    for line in run_git(log_cmd, cwd=repo).stdout.splitlines():
+        if not line.strip():
+            continue
+        commit, ts_s, subject = line.split("|", 2)
+        show = run_git(["show", "--format=", commit, "--", relpath], cwd=repo).stdout
+        commits.append({"commit": commit, "commit_at": int(ts_s) * 1000, "subject": subject, "diff": show})
+    aggregate_diff = run_git(diff_cmd, cwd=repo).stdout
+    output({
+        "success": True,
+        "repo": str(repo),
+        "req": args.req,
+        "from_commit": from_commit,
+        "to_commit": to_commit,
+        "commit_count": len(commits),
+        "current_content": req_path.read_text(encoding="utf-8"),
+        "commits": commits,
+        "aggregate_diff": aggregate_diff,
+    })
+
+
+def cmd_db_mark_req_processed(args):
+    repo = Path(args.repo)
+    conn = get_conn(repo)
+    row = conn.execute("SELECT latest_commit, latest_commit_at, status FROM requirements WHERE id=?", (args.req_id,)).fetchone()
+    if not row:
+        fail(f"requirement not found: {args.req_id}")
+    commit = args.processed_commit or row["latest_commit"]
+    commit_at = row["latest_commit_at"]
+    mark_req_processed(conn, args.req_id, commit, commit_at)
+    if args.status:
+        ensure_status(args.status, REQ_STATUS, "requirement status")
+        conn.execute("UPDATE requirements SET status=?, updated_at=? WHERE id=?", (args.status, ts_ms(), args.req_id))
+        log_event(conn, "req", args.req_id, row["status"], args.status, note="mark processed")
+    conn.commit()
+    conn.close()
+    output({"success": True, "req_id": args.req_id, "processed_commit": commit, "status": args.status})
+
+
+def cmd_db_block_req(args):
+    repo = Path(args.repo)
+    conn = get_conn(repo)
+    row = conn.execute("SELECT status FROM requirements WHERE id=?", (args.req_id,)).fetchone()
+    if not row:
+        fail(f"requirement not found: {args.req_id}")
+    conn.execute(
+        "UPDATE requirements SET status='blocked', blocked_reason=?, conflict_group_id=?, updated_at=? WHERE id=?",
+        (args.reason, args.conflict_group, ts_ms(), args.req_id),
+    )
+    log_event(conn, "req", args.req_id, row["status"], "blocked", note=args.reason)
+    conn.commit()
+    conn.close()
+    output({"success": True, "req_id": args.req_id, "status": "blocked", "reason": args.reason, "conflict_group": args.conflict_group})
 
 
 def cmd_write_review(args):
@@ -548,6 +695,7 @@ git push
 """
     (review_dir / filename).write_text(content + "\n", encoding="utf-8")
     now = ts_ms()
+    mark_req_processed(conn, req_id, last_commit, git_file_latest_commit(repo, f'occd/req/{req_name}')[1])
     conn.execute(
         "UPDATE requirements SET status='reviewing', review_rounds=?, last_req_commit=?, updated_at=? WHERE id=?",
         (round_num, last_commit, now, req_id),
@@ -583,6 +731,7 @@ def cmd_write_tasks(args):
     if not isinstance(tasks, list) or not tasks:
         fail("tasks must be a non-empty JSON array")
     req_id = make_req_id(repo, req_name)
+    expected_req_prefix = normalize_req_prefix(req_name)
     task_dir = repo / "occd" / "task"
     task_dir.mkdir(parents=True, exist_ok=True)
     conn = get_conn(repo)
@@ -595,6 +744,11 @@ def cmd_write_tasks(args):
     for task in tasks:
         parsed, task_type, depends_on = _validate_task_payload(task)
         task_id = task["id"]
+        if parsed["req_prefix"] != expected_req_prefix:
+            fail(
+                "task id prefix must match requirement filename stem",
+                extra={"task_id": task_id, "expected_prefix": expected_req_prefix, "req": req_name},
+            )
         xxx, yyy = parsed["xxx"], parsed["yyy"]
         filename = f"{task_id}.md"
         branch = task_id if task_type in {"coding", "test-write"} else None
@@ -636,12 +790,14 @@ depends_on: {json.dumps(depends_on, ensure_ascii=False)}
 """
         (task_dir / filename).write_text(content + "\n", encoding="utf-8")
         conn.execute(
-            "INSERT OR REPLACE INTO sources(id,req_id,filename,task_type,xxx,yyy,status,branch,retry_count,created_at,updated_at) VALUES(?,?,?,?,?,?,'pending',?,0,?,?)",
+            "INSERT OR REPLACE INTO tasks(id,req_id,filename,task_type,xxx,yyy,status,branch,retry_count,created_at,updated_at) VALUES(?,?,?,?,?,?,'pending',?,0,?,?)",
             (task_id, req_id, filename, task_type, xxx, yyy, branch, now, now),
         )
-        log_event(conn, "source", task_id, None, "pending")
+        log_event(conn, "task", task_id, None, "pending")
         created_ids.append(task_id)
-    conn.execute("UPDATE requirements SET status='decomposed',updated_at=? WHERE id=?", (now, req_id))
+    latest_commit, latest_commit_at = git_file_latest_commit(repo, f'occd/req/{req_name}')
+    mark_req_processed(conn, req_id, latest_commit, latest_commit_at)
+    conn.execute("UPDATE requirements SET status='decomposed', last_req_commit=?, updated_at=? WHERE id=?", (latest_commit, now, req_id))
     log_event(conn, "req", req_id, old_status, "decomposed", note=f"{len(tasks)} tasks")
     conn.commit()
     conn.close()
@@ -649,14 +805,14 @@ depends_on: {json.dumps(depends_on, ensure_ascii=False)}
     output({"success": True, "tasks": created_ids})
 
 
-def cmd_db_update_source_status(args):
+def cmd_db_update_task_status(args):
     repo = Path(args.repo)
     parse_task_id(args.task)
-    ensure_status(args.status, SOURCE_STATUS, "source status")
+    ensure_status(args.status, TASK_STATUS, "task status")
     conn = get_conn(repo)
-    row = conn.execute("SELECT status, retry_count FROM sources WHERE id=?", (args.task,)).fetchone()
+    row = conn.execute("SELECT status, retry_count FROM tasks WHERE id=?", (args.task,)).fetchone()
     if not row:
-        fail(f"source not found: {args.task}")
+        fail(f"task not found: {args.task}")
     old_status = row["status"]
     updates = ["status=?", "updated_at=?"]
     values: list[Any] = [args.status, ts_ms()]
@@ -666,40 +822,43 @@ def cmd_db_update_source_status(args):
     if args.status == "spawned" and old_status == "failed":
         updates.append("retry_count=retry_count+1")
     values.append(args.task)
-    conn.execute(f"UPDATE sources SET {', '.join(updates)} WHERE id=?", values)
+    conn.execute(f"UPDATE tasks SET {', '.join(updates)} WHERE id=?", values)
     agent = "main"
     if args.session_key and args.status in {"running", "done", "failed"}:
         agent = f"sub:{args.session_key}"
-    log_event(conn, "source", args.task, old_status, args.status, agent=agent, note=args.note)
+    log_event(conn, "task", args.task, old_status, args.status, agent=agent, note=args.note)
     conn.commit()
     conn.close()
     write_log(repo, "INFO", f"子任务状态更新: {args.task} → {args.status}")
     output({"success": True, "task_id": args.task, "status": args.status})
 
 
-def cmd_db_list_sourcese_by_xxx_common(repo: Path, xxx: str) -> list[dict[str, Any]]:
+def cmd_db_list_tasks_by_xxx_common(repo: Path, xxx: str) -> list[dict[str, Any]]:
     conn = get_conn(repo)
-    rows = conn.execute("SELECT * FROM sources WHERE xxx=? ORDER BY yyy", (xxx,)).fetchall()
+    rows = conn.execute("SELECT * FROM tasks WHERE xxx=? ORDER BY yyy", (xxx,)).fetchall()
     conn.close()
     return [dict(r) for r in rows]
 
 
-def cmd_db_list_sources_by_xxx(args):
-    output({"success": True, "sources": cmd_db_list_sourcese_by_xxx_common(Path(args.repo), args.xxx)})
+def cmd_db_list_tasks_by_xxx(args):
+    tasks = cmd_db_list_tasks_by_xxx_common(Path(args.repo), args.xxx)
+    output({"success": True, "tasks": tasks})
 
 
-def cmd_db_add_execution(args):
+
+
+def cmd_db_add_report(args):
     repo = Path(args.repo)
     parse_task_id(args.task)
     ensure_status(args.outcome, OUTCOMES, "outcome")
     started_at = iso_to_ts_ms(args.started_at) or ts_ms()
     finished_at = iso_to_ts_ms(args.finished_at) or ts_ms()
     conn = get_conn(repo)
-    source_exists = conn.execute("SELECT 1 FROM sources WHERE id=?", (args.task,)).fetchone()
-    if not source_exists:
-        fail(f"source not found: {args.task}")
+    task_exists = conn.execute("SELECT 1 FROM tasks WHERE id=?", (args.task,)).fetchone()
+    if not task_exists:
+        fail(f"task not found: {args.task}")
     conn.execute(
-        "INSERT INTO executions(source_id,report_file,session_key,outcome,summary,started_at,finished_at) VALUES(?,?,?,?,?,?,?)",
+        "INSERT INTO reports(task_id,report_file,session_key,outcome,summary,started_at,finished_at) VALUES(?,?,?,?,?,?,?)",
         (args.task, args.report_file, args.session_key, args.outcome, args.summary, started_at, finished_at),
     )
     conn.commit()
@@ -707,12 +866,14 @@ def cmd_db_add_execution(args):
     output({"success": True})
 
 
-def cmd_db_list_executions(args):
+def cmd_db_list_reports(args):
     repo = Path(args.repo)
     conn = get_conn(repo)
-    rows = conn.execute("SELECT * FROM executions WHERE source_id=? ORDER BY started_at", (args.task,)).fetchall()
+    rows = [dict(r) for r in conn.execute("SELECT * FROM reports WHERE task_id=? ORDER BY started_at", (args.task,)).fetchall()]
     conn.close()
-    output({"success": True, "executions": [dict(r) for r in rows]})
+    output({"success": True, "reports": rows})
+
+
 
 
 def cmd_db_summary(args):
@@ -724,23 +885,23 @@ def cmd_db_summary(args):
             continue
         conn = get_conn(repo)
         req_rows = conn.execute("SELECT status, COUNT(*) as cnt FROM requirements GROUP BY status").fetchall()
-        src_rows = conn.execute("SELECT status, task_type, COUNT(*) as cnt FROM sources GROUP BY status, task_type").fetchall()
-        exc_rows = conn.execute("SELECT outcome, COUNT(*) as cnt FROM executions GROUP BY outcome").fetchall()
+        task_rows = conn.execute("SELECT status, task_type, COUNT(*) as cnt FROM tasks GROUP BY status, task_type").fetchall()
+        report_rows = conn.execute("SELECT outcome, COUNT(*) as cnt FROM reports GROUP BY outcome").fetchall()
         conn.close()
         req_stats = {"total": 0}
         for r in req_rows:
             req_stats[r["status"]] = r["cnt"]
             req_stats["total"] += r["cnt"]
-        src_stats = {"total": 0, "by_type": {}, "by_status": {}}
-        for r in src_rows:
-            src_stats["total"] += r["cnt"]
-            src_stats["by_type"][r["task_type"]] = src_stats["by_type"].get(r["task_type"], 0) + r["cnt"]
-            src_stats["by_status"][r["status"]] = src_stats["by_status"].get(r["status"], 0) + r["cnt"]
-        exc_stats = {"total": 0}
-        for r in exc_rows:
-            exc_stats[r["outcome"]] = r["cnt"]
-            exc_stats["total"] += r["cnt"]
-        result[repo.name] = {"requirements": req_stats, "sources": src_stats, "executions": exc_stats}
+        task_stats = {"total": 0, "by_type": {}, "by_status": {}}
+        for r in task_rows:
+            task_stats["total"] += r["cnt"]
+            task_stats["by_type"][r["task_type"]] = task_stats["by_type"].get(r["task_type"], 0) + r["cnt"]
+            task_stats["by_status"][r["status"]] = task_stats["by_status"].get(r["status"], 0) + r["cnt"]
+        report_stats = {"total": 0}
+        for r in report_rows:
+            report_stats[r["outcome"]] = r["cnt"]
+            report_stats["total"] += r["cnt"]
+        result[repo.name] = {"requirements": req_stats, "tasks": task_stats, "reports": report_stats}
     output({"success": True, "repos": result})
 
 
@@ -798,7 +959,7 @@ def cmd_merge_branches(args):
     ensure_clean_worktree_base(repo, base_branch)
     conn = get_conn(repo)
     rows = conn.execute(
-        "SELECT id, branch FROM sources WHERE xxx=? AND task_type IN ('coding','test-write') AND status='done' ORDER BY created_at",
+        "SELECT id, branch FROM tasks WHERE xxx=? AND task_type IN ('coding','test-write') AND status='done' ORDER BY created_at",
         (args.xxx,),
     ).fetchall()
     conn.close()
@@ -923,7 +1084,7 @@ def cmd_latest_report(args):
     repo = Path(args.repo)
     conn = get_conn(repo)
     row = conn.execute(
-        "SELECT report_file, session_key, outcome, summary, started_at, finished_at FROM executions WHERE source_id=? ORDER BY finished_at DESC, id DESC LIMIT 1",
+        "SELECT report_file, session_key, outcome, summary, started_at, finished_at FROM reports WHERE task_id=? ORDER BY finished_at DESC, id DESC LIMIT 1",
         (args.task,),
     ).fetchone()
     conn.close()
@@ -1024,6 +1185,27 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--repo", required=True)
     s.set_defaults(func=cmd_db_list_pending_reqs)
 
+    s = sp("req-history", "读取 requirement 从已处理基线到最新版本的提交区间")
+    s.add_argument("--repo", required=True)
+    s.add_argument("--req", required=True)
+    s.add_argument("--from-commit", default=None)
+    s.add_argument("--to-commit", default=None)
+    s.set_defaults(func=cmd_req_history)
+
+    s = sp("db-mark-req-processed", "将 requirement 的当前待处理区间标记为已处理")
+    s.add_argument("--repo", required=True)
+    s.add_argument("--req-id", required=True)
+    s.add_argument("--processed-commit", default=None)
+    s.add_argument("--status", default=None)
+    s.set_defaults(func=cmd_db_mark_req_processed)
+
+    s = sp("db-block-req", "将 requirement 标记为 blocked 并记录冲突信息")
+    s.add_argument("--repo", required=True)
+    s.add_argument("--req-id", required=True)
+    s.add_argument("--reason", required=True)
+    s.add_argument("--conflict-group", default=None)
+    s.set_defaults(func=cmd_db_block_req)
+
     s = sp("write-review", "生成需求澄清文件")
     s.add_argument("--repo", required=True)
     s.add_argument("--req", required=True)
@@ -1036,20 +1218,21 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--tasks", required=True)
     s.set_defaults(func=cmd_write_tasks)
 
-    s = sp("db-update-source-status", "更新子任务状态（主/子代理均可调用）")
+    s = sp("db-update-task-status", "更新 task 状态（主/子代理均可调用）")
     s.add_argument("--repo", required=True)
     s.add_argument("--task", required=True)
     s.add_argument("--status", required=True)
     s.add_argument("--session-key", default=None)
     s.add_argument("--note", default=None)
-    s.set_defaults(func=cmd_db_update_source_status)
+    s.set_defaults(func=cmd_db_update_task_status)
 
-    s = sp("db-list-sources-by-xxx", "列出某串行批次下所有子任务")
+    s = sp("db-list-tasks-by-xxx", "列出某串行批次下所有任务")
     s.add_argument("--repo", required=True)
     s.add_argument("--xxx", required=True)
-    s.set_defaults(func=cmd_db_list_sources_by_xxx)
+    s.set_defaults(func=cmd_db_list_tasks_by_xxx)
 
-    s = sp("db-add-execution", "登记一次执行记录")
+
+    s = sp("db-add-report", "登记一次报告记录")
     s.add_argument("--repo", required=True)
     s.add_argument("--task", required=True)
     s.add_argument("--report-file", required=True)
@@ -1058,12 +1241,13 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--session-key", default=None)
     s.add_argument("--started-at", default=None)
     s.add_argument("--finished-at", default=None)
-    s.set_defaults(func=cmd_db_add_execution)
+    s.set_defaults(func=cmd_db_add_report)
 
-    s = sp("db-list-executions", "列出某子任务所有执行历史")
+    s = sp("db-list-reports", "列出某任务所有报告历史")
     s.add_argument("--repo", required=True)
     s.add_argument("--task", required=True)
-    s.set_defaults(func=cmd_db_list_executions)
+    s.set_defaults(func=cmd_db_list_reports)
+
 
     s = sp("db-summary", "全局状态汇总")
     s.add_argument("--work-dir", required=True)
@@ -1110,7 +1294,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--extra-arg", action="append")
     s.set_defaults(func=cmd_build_opencode_command)
 
-    s = sp("latest-report", "根据 executions 表获取某任务最新报告")
+    s = sp("latest-report", "根据 reports 表获取某任务最新报告")
     s.add_argument("--repo", required=True)
     s.add_argument("--task", required=True)
     s.set_defaults(func=cmd_latest_report)
