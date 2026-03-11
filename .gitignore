@@ -99,3 +99,7 @@ package-lock.json
 
 # Local iOS signing overrides
 apps/ios/LocalSigning.xcconfig
+/skills/bot-fzw/browser-debug
+/skills/bot-fzw/captcha-debug
+/skills/bot-fzw/venv310
+skills/bot-fzw/fzw.db
